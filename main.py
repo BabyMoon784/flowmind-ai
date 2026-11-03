@@ -5,6 +5,15 @@ from ai_service import chat_with_tools
 from openai import OpenAIError
 from memory import load_history, save_history, clear_history
 
+from long_term_memory import (
+    load_memories,
+    remember,
+    forget,
+    clear_memories,
+    format_memories,
+)
+
+
 MAX_HISTORY_MESSAGES = 10
 
 DATA_FILE = Path(__file__).resolve().parent / "tasks.json"
@@ -25,6 +34,67 @@ def ai_chat():
 
     while True:
         question = input("\n你：").strip()
+
+
+        # Memory v2：长期记忆管理命令
+        if question.startswith("/remember "):
+            parts = question.split(maxsplit=2)
+
+            if len(parts) != 3:
+                print("用法：/remember 记忆名称 记忆内容")
+                continue
+
+            try:
+                remember(parts[1], parts[2])
+                print(f"长期记忆已保存：{parts[1]}")
+            except (ValueError, OSError, RuntimeError) as e:
+                print(f"保存失败：{e}")
+
+            continue
+
+        if question == "/memories":
+            try:
+                memories = load_memories()
+
+                if not memories:
+                    print("目前没有长期记忆。")
+                else:
+                    print("\n===== 长期记忆 =====")
+                    for key, value in memories.items():
+                        print(f"{key}: {value}")
+
+            except RuntimeError as e:
+                print(f"读取失败：{e}")
+
+            continue
+
+        if question.startswith("/forget "):
+            key = question[len("/forget "):].strip()
+
+            try:
+                if forget(key):
+                    print(f"已删除记忆：{key}")
+                else:
+                    print("没有找到这条记忆。")
+            except (OSError, RuntimeError) as e:
+                print(f"删除失败：{e}")
+
+            continue
+
+        if question == "/clear-memory":
+            confirm = input("确定清空全部长期记忆？输入 YES：")
+
+            if confirm == "YES":
+                try:
+                    clear_memories()
+                    print("全部长期记忆已清空。")
+                except OSError as e:
+                    print(f"清空失败：{e}")
+            else:
+                print("已取消。")
+
+            continue
+
 
         if question.lower() == "exit":
             print("已退出 AI 对话。")
@@ -65,10 +135,12 @@ def ai_chat():
         print("AI 正在思考...")
 
         try:
+            
             answer = chat_with_tools(
-                request_history,
-                get_task_summary
-            )
+            request_history,
+            get_task_summary,
+            long_term_memory=format_memories()  )
+
         except (OpenAIError, RuntimeError) as e:
             print(f"AI 请求失败：{type(e).__name__}: {e}")
             continue

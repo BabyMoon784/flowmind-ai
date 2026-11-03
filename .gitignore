@@ -5,3 +5,7 @@ __pycache__/
 .env.*
 !.env.example
 tasks.json
+chat_history.json
+chat_history.json.tmp
+long_term_memory.json
+long_term_memoey.json.tmp
