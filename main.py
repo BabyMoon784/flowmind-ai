@@ -1,10 +1,33 @@
 
 import json
 from pathlib import Path
+from ai_service import chat_with_ai
 
 DATA_FILE = Path(__file__).resolve().parent / "tasks.json"
 tasks = []
 next_id = 1
+
+
+def ai_chat():
+    print("\n===== FlowMind AI 智能助手 =====")
+    print("输入 exit 退出 AI 对话。")
+
+    while True:
+        question = input("\n你：").strip()
+
+        if question.lower() == "exit":
+            print("已退出 AI 对话。")
+            break
+
+        if not question:
+            continue
+
+        print("AI 正在思考...")
+
+        answer = chat_with_ai(question)
+
+        print(f"\nAI：{answer}")
+
 
 def save_tasks():
     data = {
@@ -111,7 +134,8 @@ def main():
         print("1. 创建任务")
         print("2. 查看任务")
         print("3. 完成任务")
-        print("4. 退出程序")
+        print("4. AI 智能助手")
+        print("5. 退出程序")
 
         choice = input("请选择操作：").strip()
 
@@ -122,6 +146,8 @@ def main():
         elif choice == "3":
             complete_task()
         elif choice == "4":
+            ai_chat()
+        elif choice == "5":
             print("再见！")
             break
         else:
