@@ -1,8 +1,10 @@
 
 import json
 from pathlib import Path
-from ai_service import chat_with_ai
+from ai_service import chat_with_tools
 from openai import OpenAIError
+from memory import load_history, save_history, clear_history
+
 MAX_HISTORY_MESSAGES = 10
 
 DATA_FILE = Path(__file__).resolve().parent / "tasks.json"
@@ -10,14 +12,16 @@ tasks = []
 next_id = 1
 
 
-
-
-
 def ai_chat():
-    history = []
+    try:
+        history = load_history()
+    except RuntimeError as e:
+        print(f"加载聊天记录失败：{e}")
+        return
 
     print("\n===== FlowMind AI 智能助手 =====")
     print("输入 exit 退出，clear 清空，history 查看记录。")
+    print(f"已恢复 {len(history) // 2} 轮历史对话。")
 
     while True:
         question = input("\n你：").strip()
@@ -27,18 +31,23 @@ def ai_chat():
             break
 
         if question.lower() == "clear":
+            try:
+                clear_history()
+            except OSError as e:
+                print(f"清空聊天记录失败：{e}")
+                continue
+
             history.clear()
-            print("当前会话历史已清空。")
+            print("聊天记录已清空。")
             continue
 
         if question.lower() == "history":
             if not history:
-                print("当前没有对话记录。")
+                print("当前没有聊天记录。")
             else:
                 for message in history:
                     role = (
-                        "你"
-                        if message["role"] == "user"
+                        "你" if message["role"] == "user"
                         else "AI"
                     )
                     print(f"{role}：{message['content']}")
@@ -48,24 +57,24 @@ def ai_chat():
             print("输入不能为空。")
             continue
 
-        # 保存当前提问，但暂时不修改正式历史
         request_history = [
-            *history,
+            *history[-MAX_HISTORY_MESSAGES:],
             {"role": "user", "content": question},
         ]
 
         print("AI 正在思考...")
 
         try:
-            answer = chat_with_ai(request_history)
-
+            answer = chat_with_tools(
+                request_history,
+                get_task_summary
+            )
         except (OpenAIError, RuntimeError) as e:
             print(f"AI 请求失败：{type(e).__name__}: {e}")
             continue
 
         print(f"\nAI：{answer}")
 
-        # 只有请求成功，才把这一轮加入历史
         history.append({
             "role": "user",
             "content": question,
@@ -76,10 +85,10 @@ def ai_chat():
             "content": answer,
         })
 
-        # 保留最近 5 轮完整对话
-        if len(history) > MAX_HISTORY_MESSAGES:
-            history = history[-MAX_HISTORY_MESSAGES:]
-
+        try:
+            save_history(history)
+        except OSError as e:
+            print(f"保存聊天记录失败：{e}")
 
 
 def save_tasks():
@@ -178,6 +187,24 @@ def complete_task():
             return
 
     print("没有找到该任务。")
+
+
+def get_task_summary():
+    total = len(tasks)
+
+    completed = sum(
+        1 for task in tasks
+        if task["status"] == "已完成"
+    )
+
+    pending = total - completed
+
+    return {
+        "total": total,
+        "completed": completed,
+        "pending": pending
+    }
+
 
 
 def main():
