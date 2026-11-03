@@ -1,7 +1,27 @@
 
+import json
+from pathlib import Path
+
+DATA_FILE = Path(__file__).resolve().parent / "tasks.json"
 tasks = []
 next_id = 1
 
+def save_tasks():
+    data = {
+        "next_id": next_id,
+        "tasks": tasks
+    }
+
+    temp_file = DATA_FILE.with_suffix(".json.tmp")
+
+    try:
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+
+        temp_file.replace(DATA_FILE)
+
+    except OSError as e:
+        print(f"保存任务失败：{e}")
 
 def create_task():
     global next_id
@@ -20,6 +40,7 @@ def create_task():
 
     tasks.append(task)
     next_id += 1
+    save_tasks()
 
     print(f"任务创建成功！ID: {task['id']}")
 
@@ -37,6 +58,34 @@ def show_tasks():
             f"{task['title']} | {task['status']}"
         )
 
+def load_tasks():
+    global tasks, next_id
+
+    if not DATA_FILE.exists():
+        return
+
+    try:
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        loaded_tasks = data["tasks"]
+        loaded_next_id = data["next_id"]
+
+        if not isinstance(loaded_tasks, list):
+            raise ValueError("tasks 必须是列表")
+
+        if not isinstance(loaded_next_id, int) or loaded_next_id < 1:
+            raise ValueError("next_id 无效")
+
+        tasks = loaded_tasks
+        next_id = loaded_next_id
+
+        print(f"已加载 {len(tasks)} 个历史任务。")
+
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        print(f"加载任务失败：{e}")
+        print("本次不会覆盖原有数据，请检查 tasks.json。")
+        raise SystemExit(1)
 
 def complete_task():
     try:
@@ -48,6 +97,7 @@ def complete_task():
     for task in tasks:
         if task["id"] == task_id:
             task["status"] = "已完成"
+            save_tasks()
             print("任务已完成！")
             return
 
@@ -55,6 +105,7 @@ def complete_task():
 
 
 def main():
+    load_tasks()
     while True:
         print("\n========== FlowMind AI ==========")
         print("1. 创建任务")
