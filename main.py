@@ -2,15 +2,22 @@
 import json
 from pathlib import Path
 from ai_service import chat_with_ai
+from openai import OpenAIError
+MAX_HISTORY_MESSAGES = 10
 
 DATA_FILE = Path(__file__).resolve().parent / "tasks.json"
 tasks = []
 next_id = 1
 
 
+
+
+
 def ai_chat():
+    history = []
+
     print("\n===== FlowMind AI 智能助手 =====")
-    print("输入 exit 退出 AI 对话。")
+    print("输入 exit 退出，clear 清空，history 查看记录。")
 
     while True:
         question = input("\n你：").strip()
@@ -19,14 +26,60 @@ def ai_chat():
             print("已退出 AI 对话。")
             break
 
-        if not question:
+        if question.lower() == "clear":
+            history.clear()
+            print("当前会话历史已清空。")
             continue
+
+        if question.lower() == "history":
+            if not history:
+                print("当前没有对话记录。")
+            else:
+                for message in history:
+                    role = (
+                        "你"
+                        if message["role"] == "user"
+                        else "AI"
+                    )
+                    print(f"{role}：{message['content']}")
+            continue
+
+        if not question:
+            print("输入不能为空。")
+            continue
+
+        # 保存当前提问，但暂时不修改正式历史
+        request_history = [
+            *history,
+            {"role": "user", "content": question},
+        ]
 
         print("AI 正在思考...")
 
-        answer = chat_with_ai(question)
+        try:
+            answer = chat_with_ai(request_history)
+
+        except (OpenAIError, RuntimeError) as e:
+            print(f"AI 请求失败：{type(e).__name__}: {e}")
+            continue
 
         print(f"\nAI：{answer}")
+
+        # 只有请求成功，才把这一轮加入历史
+        history.append({
+            "role": "user",
+            "content": question,
+        })
+
+        history.append({
+            "role": "assistant",
+            "content": answer,
+        })
+
+        # 保留最近 5 轮完整对话
+        if len(history) > MAX_HISTORY_MESSAGES:
+            history = history[-MAX_HISTORY_MESSAGES:]
+
 
 
 def save_tasks():
