@@ -4,6 +4,7 @@ from pathlib import Path
 from ai_service import chat_with_tools
 from openai import OpenAIError
 from memory import load_history, save_history, clear_history
+import task_service as service
 
 from long_term_memory import (
     load_memories,
@@ -180,29 +181,30 @@ def save_tasks():
     except OSError as e:
         print(f"保存任务失败：{e}")
 
-def create_task():
-    global next_id
 
+def create_task():
     title = input("请输入任务名称：").strip()
 
-    if not title:
-        print("任务名称不能为空！")
-        return
+    try:
+        task = service.create_task(title)
+        print(f"任务创建成功！ID: {task['id']}")
 
-    task = {
-        "id": next_id,
-        "title": title,
-        "status": "待完成"
-    }
+    except ValueError as e:
+        print(f"输入错误：{e}")
 
-    tasks.append(task)
-    next_id += 1
-    save_tasks()
+    except (OSError, KeyError, TypeError) as e:
+        print(f"创建任务失败：{e}")
 
-    print(f"任务创建成功！ID: {task['id']}")
+
 
 
 def show_tasks():
+    try:
+        tasks = service.list_tasks()
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        print(f"读取任务失败：{e}")
+        return
+
     if not tasks:
         print("当前没有任务。")
         return
@@ -214,6 +216,7 @@ def show_tasks():
             f"[{task['id']}] "
             f"{task['title']} | {task['status']}"
         )
+
 
 def load_tasks():
     global tasks, next_id
@@ -244,6 +247,7 @@ def load_tasks():
         print("本次不会覆盖原有数据，请检查 tasks.json。")
         raise SystemExit(1)
 
+
 def complete_task():
     try:
         task_id = int(input("请输入要完成的任务 ID："))
@@ -251,36 +255,26 @@ def complete_task():
         print("请输入有效的数字！")
         return
 
-    for task in tasks:
-        if task["id"] == task_id:
-            task["status"] = "已完成"
-            save_tasks()
-            print("任务已完成！")
-            return
+    try:
+        service.update_task_status(task_id, "已完成")
+        print("任务已完成！")
 
-    print("没有找到该任务。")
+    except LookupError:
+        print("没有找到该任务。")
+
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        print(f"更新任务失败：{e}")
+
+
 
 
 def get_task_summary():
-    total = len(tasks)
+    return service.get_task_summary()
 
-    completed = sum(
-        1 for task in tasks
-        if task["status"] == "已完成"
-    )
-
-    pending = total - completed
-
-    return {
-        "total": total,
-        "completed": completed,
-        "pending": pending
-    }
 
 
 
 def main():
-    load_tasks()
     while True:
         print("\n========== FlowMind AI ==========")
         print("1. 创建任务")

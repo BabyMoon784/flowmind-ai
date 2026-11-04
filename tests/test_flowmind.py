@@ -1,31 +1,41 @@
 
 import json
-
+import task_service
 import main
 import memory
 import long_term_memory
 
 
 # 测试 1：没有任务时的统计
-def test_empty_tasks(monkeypatch):
-    monkeypatch.setattr(main, "tasks", [])
+
+def test_empty_tasks(tmp_path, monkeypatch):
+    test_file = tmp_path / "tasks.json"
+    monkeypatch.setattr(
+        task_service, "DATA_FILE", test_file
+    )
 
     result = main.get_task_summary()
 
-    assert result["total"] == 0
-    assert result["completed"] == 0
-    assert result["pending"] == 0
+    assert result == {
+        "total": 0,
+        "completed": 0,
+        "pending": 0,
+    }
 
 
-# 测试 2：正常任务统计
-def test_task_summary(monkeypatch):
-    sample_tasks = [
-        {"id": 1, "title": "学习Python", "status": "已完成"},
-        {"id": 2, "title": "开发Agent", "status": "待完成"},
-        {"id": 3, "title": "学习FastAPI", "status": "待完成"},
-    ]
+def test_task_summary(tmp_path, monkeypatch):
+    test_file = tmp_path / "tasks.json"
+    monkeypatch.setattr(
+        task_service, "DATA_FILE", test_file
+    )
 
-    monkeypatch.setattr(main, "tasks", sample_tasks)
+    task_service.create_task("学习 Python")
+    second = task_service.create_task("学习 Agent")
+    task_service.create_task("学习 FastAPI")
+
+    task_service.update_task_status(
+        second["id"], "已完成"
+    )
 
     result = main.get_task_summary()
 
@@ -34,6 +44,7 @@ def test_task_summary(monkeypatch):
         "completed": 1,
         "pending": 2,
     }
+
 
 
 # 测试 3：聊天历史保存与恢复
