@@ -8,13 +8,12 @@ from api import app
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    # 使用临时文件，不碰真实 tasks.json
-    test_file = tmp_path / "tasks.json"
+    test_db = tmp_path / "test_flowmind.db"
 
     monkeypatch.setattr(
         task_service,
-        "DATA_FILE",
-        test_file,
+        "DB_FILE",
+        test_db,
     )
 
     with TestClient(app) as test_client:

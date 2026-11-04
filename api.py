@@ -1,10 +1,10 @@
 
 from typing import Literal
-
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 import task_service as service
+import sqlite3
 
 
 app = FastAPI(
@@ -39,7 +39,7 @@ def health_check():
 def get_tasks():
     try:
         tasks = service.list_tasks()
-    except (OSError, ValueError, KeyError, TypeError):
+    except (sqlite3.Error, OSError, ValueError, KeyError, TypeError):
         raise HTTPException(
             status_code=500,
             detail="任务数据读取失败",
@@ -60,7 +60,7 @@ def create_task(task: TaskCreate):
 
     try:
         return service.create_task(title)
-    except (OSError, ValueError, KeyError, TypeError):
+    except (sqlite3.Error, OSError, ValueError, KeyError, TypeError):
         raise HTTPException(
             status_code=500,
             detail="创建任务失败",
@@ -81,7 +81,7 @@ def update_task(task_id: int, update: TaskUpdate):
             detail=f"任务 ID {task_id} 不存在",
         )
 
-    except (OSError, ValueError, KeyError, TypeError):
+    except (sqlite3.Error, OSError, ValueError, KeyError, TypeError):
         raise HTTPException(
             status_code=500,
             detail="更新任务失败",

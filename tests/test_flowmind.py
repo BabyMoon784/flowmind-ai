@@ -8,10 +8,14 @@ import long_term_memory
 
 # 测试 1：没有任务时的统计
 
+
 def test_empty_tasks(tmp_path, monkeypatch):
-    test_file = tmp_path / "tasks.json"
+    test_db = tmp_path / "test_flowmind.db"
+
     monkeypatch.setattr(
-        task_service, "DATA_FILE", test_file
+        task_service,
+        "DB_FILE",
+        test_db,
     )
 
     result = main.get_task_summary()
@@ -24,9 +28,12 @@ def test_empty_tasks(tmp_path, monkeypatch):
 
 
 def test_task_summary(tmp_path, monkeypatch):
-    test_file = tmp_path / "tasks.json"
+    test_db = tmp_path / "test_flowmind.db"
+
     monkeypatch.setattr(
-        task_service, "DATA_FILE", test_file
+        task_service,
+        "DB_FILE",
+        test_db,
     )
 
     task_service.create_task("学习 Python")
@@ -44,7 +51,6 @@ def test_task_summary(tmp_path, monkeypatch):
         "completed": 1,
         "pending": 2,
     }
-
 
 
 # 测试 3：聊天历史保存与恢复
