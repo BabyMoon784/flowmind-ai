@@ -9,3 +9,10 @@ chat_history.json
 chat_history.json.tmp
 long_term_memory.json
 long_term_memoey.json.tmp
+# SQLite databases
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+# Local data backups
+.local_backups/
