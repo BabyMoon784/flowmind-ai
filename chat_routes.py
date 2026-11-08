@@ -133,3 +133,42 @@ def get_session_history(session_id: UUID):
             detail="聊天历史读取失败"
         )
 
+
+@router.get("/chat/sessions")
+def get_sessions():
+    """获取聊天会话列表。"""
+    try:
+        session_store.init_database()
+        return session_store.list_sessions()
+
+    except (sqlite3.Error, OSError):
+        raise HTTPException(
+            status_code=500,
+            detail="读取会话列表失败"
+        )
+
+
+@router.delete("/chat/sessions/{session_id}")
+def remove_session(session_id: UUID):
+    """删除一段聊天会话。"""
+    try:
+        session_store.init_database()
+
+        deleted = session_store.delete_session(
+            str(session_id)
+        )
+
+        if not deleted:
+            raise HTTPException(
+                status_code=404,
+                detail="聊天会话不存在"
+            )
+
+        return {"deleted": True}
+
+    except (sqlite3.Error, OSError):
+        raise HTTPException(
+            status_code=500,
+            detail="删除会话失败"
+        )
+

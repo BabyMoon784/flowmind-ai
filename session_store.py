@@ -118,3 +118,69 @@ def save_turn(session_id, question, answer, new_session=False):
         conn.close()
 
     return load_history(session_id)
+
+
+
+def list_sessions(): 
+    """列出所有聊天会话，自动生成标题。"""
+    conn = get_connection()
+
+    try:
+        rows = conn.execute("""
+            SELECT       
+                s.id,
+                s.created_at,
+                COALESCE(
+                    (
+                        SELECT SUBSTR(m.content, 1, 30)
+                        FROM messages AS m
+                        WHERE m.session_id = s.id
+                          AND m.role = 'user'
+                        ORDER BY m.id ASC
+                        LIMIT 1
+                    ),
+                    '新对话'
+                ) AS title,
+                (
+                    SELECT COUNT(*)
+                    FROM messages AS m
+                    WHERE m.session_id = s.id
+                ) AS message_count
+            FROM sessions AS s
+            ORDER BY s.created_at DESC, s.rowid DESC
+        """).fetchall()
+
+        return [dict(row) for row in rows]
+
+    finally:
+        conn.close()
+
+
+def delete_session(session_id):
+    """删除指定会话及其所有聊天消息。"""
+    conn = get_connection()
+
+    try:
+        with conn:
+            exists = conn.execute(
+                "SELECT id FROM sessions WHERE id = ?",
+                (session_id,)
+            ).fetchone()
+
+            if exists is None:
+                return False
+
+            conn.execute(
+                "DELETE FROM messages WHERE session_id = ?",
+                (session_id,)
+            )
+
+            conn.execute(
+                "DELETE FROM sessions WHERE id = ?",
+                (session_id,)
+            )
+
+        return True
+
+    finally:
+        conn.close()

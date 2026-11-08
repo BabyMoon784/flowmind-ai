@@ -145,3 +145,71 @@ def test_chat_memory_and_tool(client, monkeypatch):
         captured["summary_func"]
         is chat_routes.service.get_task_summary
     )
+
+
+def test_list_sessions(client, monkeypatch):
+    monkeypatch.setattr(
+        chat_routes,
+        "chat_with_tools",
+        fake_chat
+    )
+
+    client.post(
+        "/chat",
+        json={"message": "学习 FastAPI"}
+    )
+
+    client.post(
+        "/chat",
+        json={"message": "学习 SQLite"}
+    )
+
+    response = client.get("/chat/sessions")
+
+    assert response.status_code == 200
+
+    sessions = response.json()
+
+    assert len(sessions) == 2
+
+    titles = {s["title"] for s in sessions}
+
+    assert "学习 FastAPI" in titles
+    assert "学习 SQLite" in titles
+
+
+def test_delete_session(client, monkeypatch):
+    monkeypatch.setattr(
+        chat_routes,
+        "chat_with_tools",
+        fake_chat
+    )
+
+    created = client.post(
+        "/chat",
+        json={"message": "待删除的测试对话"}
+    ).json()
+
+    session_id = created["session_id"]
+
+    response = client.delete(
+        f"/chat/sessions/{session_id}"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["deleted"] is True
+
+    history = client.get(
+        f"/chat/sessions/{session_id}"
+    )
+
+    assert history.status_code == 404
+
+
+def test_delete_missing_session(client):
+    response = client.delete(
+        "/chat/sessions/"
+        "550e8400-e29b-41d4-a716-446655440000"
+    )
+
+    assert response.status_code == 404
