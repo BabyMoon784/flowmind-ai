@@ -77,6 +77,60 @@ def load_history(session_id, limit=10):
         conn.close()
 
 
+def load_history_page(session_id, limit=50, offset=0):
+    """分页读取聊天历史，包含每条消息的 ID。"""
+    conn = get_connection()
+
+    try:
+        session = conn.execute(
+            "SELECT id FROM sessions WHERE id = ?",
+            (session_id,)
+        ).fetchone()
+
+        if session is None:
+            raise LookupError("聊天会话不存在")
+
+        if not 1 <= limit <= 100:
+            raise ValueError("limit 必须在 1 到 100 之间")
+
+        if offset < 0:
+            raise ValueError("offset 不能小于 0")
+
+        rows = conn.execute(
+            """
+            SELECT id, role, content
+            FROM messages
+            WHERE session_id = ?
+            ORDER BY id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (session_id, limit + 1, offset)
+        ).fetchall()
+
+        has_more = len(rows) > limit
+
+        # 去掉用于判断是否还有下一页的额外记录
+        rows = rows[:limit]
+
+        # 恢复为正常的时间升序
+        messages = [
+            {
+                "id": row["id"],
+                "role": row["role"],
+                "content": row["content"]
+            }
+            for row in reversed(rows)
+        ]
+
+        return {
+            "messages": messages,
+            "has_more": has_more
+        }
+
+    finally:
+        conn.close()
+
+
 def save_turn(session_id, question, answer, new_session=False):
     """原子保存一轮用户消息与 AI 回复。"""
     conn = get_connection()

@@ -75,9 +75,12 @@ def test_continue_session(client, monkeypatch):
     assert len(second.json()["history"]) == 4
 
 
+
 def test_session_persistence(client, monkeypatch):
     monkeypatch.setattr(
-        chat_routes, "chat_with_tools", fake_chat
+        chat_routes,
+        "chat_with_tools",
+        fake_chat
     )
 
     first = client.post(
@@ -90,8 +93,14 @@ def test_session_persistence(client, monkeypatch):
     )
 
     assert response.status_code == 200
-    assert response.json()[0]["content"] == "测试持久化"
-    assert len(response.json()) == 2
+
+    data = response.json()
+
+    assert data["messages"][0]["content"] == "测试持久化"
+    assert len(data["messages"]) == 2
+    assert data["messages"][0]["id"] > 0
+    assert data["has_more"] is False
+
 
 
 def test_unknown_session(client):
@@ -213,3 +222,99 @@ def test_delete_missing_session(client):
     )
 
     assert response.status_code == 404
+
+
+
+def test_chat_history_pagination(client, monkeypatch):
+    monkeypatch.setattr(
+        chat_routes,
+        "chat_with_tools",
+        fake_chat
+    )
+
+    # 创建第一轮对话
+    first = client.post(
+        "/chat",
+        json={"message": "第1轮用户消息"}
+    ).json()
+
+    session_id = first["session_id"]
+
+    # 继续创建两轮对话
+    for i in range(2, 4):
+        response = client.post(
+            "/chat",
+            json={
+                "message": f"第{i}轮用户消息",
+                "session_id": session_id
+            }
+        )
+        assert response.status_code == 200
+
+    url = f"/chat/sessions/{session_id}"
+
+    # 第一页：最新两条
+    page1 = client.get(
+        url,
+        params={"limit": 2, "offset": 0}
+    )
+
+    assert page1.status_code == 200
+
+    data1 = page1.json()
+
+    assert len(data1["messages"]) == 2
+    assert data1["messages"][0]["content"] == "第3轮用户消息"
+    assert data1["has_more"] is True
+
+    # 第二页：再往前两条
+    page2 = client.get(
+        url,
+        params={"limit": 2, "offset": 2}
+    )
+
+    data2 = page2.json()
+
+    assert len(data2["messages"]) == 2
+    assert data2["messages"][0]["content"] == "第2轮用户消息"
+    assert data2["has_more"] is True
+
+    # 第三页：最早两条
+    page3 = client.get(
+        url,
+        params={"limit": 2, "offset": 4}
+    )
+
+    data3 = page3.json()
+
+    assert len(data3["messages"]) == 2
+    assert data3["messages"][0]["content"] == "第1轮用户消息"
+    assert data3["has_more"] is False
+
+    # 确认消息 ID 没有重复
+    all_ids = [
+        m["id"]
+        for page in (data1, data2, data3)
+        for m in page["messages"]
+    ]
+
+    assert len(all_ids) == len(set(all_ids))
+
+
+
+def test_chat_history_invalid_pagination(client):
+    session_id = "550e8400-e29b-41d4-a716-446655440000"
+
+    response = client.get(
+        f"/chat/sessions/{session_id}",
+        params={"limit": 0}
+    )
+
+    assert response.status_code == 422
+
+    response = client.get(
+        f"/chat/sessions/{session_id}",
+        params={"limit": 101}
+    )
+
+    assert response.status_code == 422

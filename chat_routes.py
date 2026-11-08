@@ -2,7 +2,7 @@
 import sqlite3
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from openai import OpenAIError
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -32,6 +32,21 @@ class ChatResponse(BaseModel):
     session_id: str
     reply: str
     history: list[ChatMessage]
+
+
+
+class HistoryMessage(BaseModel):
+    id: int
+    role: str
+    content: str
+
+
+class HistoryPageResponse(BaseModel):
+    session_id: str
+    messages: list[HistoryMessage]
+    has_more: bool
+    limit: int
+    offset: int
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -109,16 +124,32 @@ def chat(request: ChatRequest):
         )
 
 
+
 @router.get(
     "/chat/sessions/{session_id}",
-    response_model=list[ChatMessage]
+    response_model=HistoryPageResponse
 )
-def get_session_history(session_id: UUID):
+def get_session_history(
+    session_id: UUID,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0)
+):
+    """分页获取指定会话的聊天历史。"""
     try:
         session_store.init_database()
 
-        return session_store.load_history(
-            str(session_id)
+        page = session_store.load_history_page(
+            str(session_id),
+            limit=limit,
+            offset=offset
+        )
+
+        return HistoryPageResponse(
+            session_id=str(session_id),
+            messages=page["messages"],
+            has_more=page["has_more"],
+            limit=limit,
+            offset=offset
         )
 
     except LookupError:
@@ -127,11 +158,18 @@ def get_session_history(session_id: UUID):
             detail="聊天会话不存在"
         )
 
+    except ValueError as e:
+        raise HTTPException(
+            status_code=422,
+            detail=str(e)
+        )
+
     except (sqlite3.Error, OSError):
         raise HTTPException(
             status_code=500,
             detail="聊天历史读取失败"
         )
+
 
 
 @router.get("/chat/sessions")
