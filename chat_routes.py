@@ -6,19 +6,24 @@ from fastapi import APIRouter, HTTPException, Query
 from openai import OpenAIError
 from pydantic import BaseModel, ConfigDict, Field
 
+import agent_service
+import session_store
+import task_service as service
+
 from ai_service import chat_with_tools
 from long_term_memory import format_memories
-import task_service as service
-import session_store
-import agent_service
+
 
 router = APIRouter()
 
 
+# ==========================================
+# 1. 请求与响应模型
+# ==========================================
+
 class ChatMessage(BaseModel):
     role: str
     content: str
-
 
 
 class ChatRequest(BaseModel):
@@ -33,15 +38,14 @@ class ChatRequest(BaseModel):
 
     use_long_term_memory: bool = False
 
-    # 不传时使用默认 Agent
     agent_id: UUID | None = None
 
 
 class ChatResponse(BaseModel):
     session_id: str
+    agent_id: str
     reply: str
     history: list[ChatMessage]
-
 
 
 class HistoryMessage(BaseModel):
@@ -52,55 +56,125 @@ class HistoryMessage(BaseModel):
 
 class HistoryPageResponse(BaseModel):
     session_id: str
+    agent_id: str | None = None
     messages: list[HistoryMessage]
     has_more: bool
     limit: int
     offset: int
 
 
-@router.post("/chat", response_model=ChatResponse)
+# ==========================================
+# 2. POST /chat
+# Agent 绑定聊天
+# ==========================================
+
+@router.post(
+    "/chat",
+    response_model=ChatResponse,
+)
 def chat(request: ChatRequest):
+
     question = request.message.strip()
 
     if not question:
         raise HTTPException(
             status_code=422,
-            detail="消息不能为空"
+            detail="消息不能为空",
         )
 
     new_session = request.session_id is None
-    session_id = str(request.session_id or uuid4())
+
+    session_id = str(
+        request.session_id or uuid4()
+    )
 
     try:
         session_store.init_database()
 
-        # 新会话没有历史，旧会话读取最近 10 条消息
+        # ==================================
+        # A. 确定会话绑定的 Agent
+        # ==================================
+
         if new_session:
+            # 新会话：使用用户指定的 Agent
+            # 未指定时绑定默认 Agent
+            agent_id = (
+                str(request.agent_id)
+                if request.agent_id is not None
+                else agent_service.DEFAULT_AGENT_ID
+            )
+
             history = []
+
         else:
-            history = session_store.load_history(session_id)
+            # 旧会话：优先读取数据库中的绑定
+            session = session_store.get_session(
+                session_id
+            )
+
+            agent_id = session["agent_id"]
+
+            # 显式传入其他 Agent：
+            # 必须拒绝，不能混用聊天历史
+            if (
+                request.agent_id is not None
+                and str(request.agent_id) != agent_id
+            ):
+                raise (
+                    session_store.SessionAgentMismatchError(
+                        "当前会话已绑定其他 Agent。"
+                        "如需切换，请创建新会话。"
+                    )
+                )
+
+            history = session_store.load_history(
+                session_id
+            )
+
+        # ==================================
+        # B. 读取 Agent 配置
+        # ==================================
+
+        agent_config = None
+
+        # 对于非默认 Agent：
+        # 必须从数据库加载配置。
+        #
+        # 显式指定默认 Agent 时也加载配置。
+        #
+        # 默认 Agent 且未显式指定时，
+        # 保持旧的 chat_with_tools 调用签名，
+        # ai_service 内部会读取默认配置。
+
+        if (
+            agent_id != agent_service.DEFAULT_AGENT_ID
+            or request.agent_id is not None
+        ):
+            agent_config = agent_service.get_agent(
+                agent_id
+            )
+
+        # ==================================
+        # C. 长期记忆
+        # ==================================
 
         memory_context = ""
 
         if request.use_long_term_memory:
             memory_context = format_memories()
 
-        
-        # 显式指定 Agent 时读取其配置
-        agent_config = None
+        # ==================================
+        # D. 调用 AI
+        # ==================================
 
-        if request.agent_id is not None:
-            agent_config = agent_service.get_agent(
-                str(request.agent_id)
-            )
-
-        # 保持旧版调用方式兼容
         chat_options = {
             "long_term_memory": memory_context,
         }
 
         if agent_config is not None:
-            chat_options["agent_config"] = agent_config
+            chat_options["agent_config"] = (
+                agent_config
+            )
 
         answer = chat_with_tools(
             [
@@ -114,111 +188,159 @@ def chat(request: ChatRequest):
             **chat_options,
         )
 
+        # ==================================
+        # E. 保存聊天
+        # ==================================
 
-        # 模型成功回复后，才保存这一轮对话
+        # AI 成功返回后才保存这一轮消息。
+        # 写入前会再次检查 Agent 绑定关系。
+
         updated_history = session_store.save_turn(
             session_id,
             question,
             answer,
-            new_session=new_session
+            new_session=new_session,
+            agent_id=agent_id,
         )
 
         return ChatResponse(
             session_id=session_id,
+            agent_id=agent_id,
             reply=answer,
-            history=updated_history
+            history=updated_history,
         )
 
-    except LookupError:
+    except (
+        session_store.SessionAgentMismatchError
+    ) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
+
+    except LookupError as exc:
         raise HTTPException(
             status_code=404,
-            detail="聊天会话不存在"
-        )
+            detail=str(exc),
+        ) from exc
 
-    except OpenAIError:
+    except OpenAIError as exc:
         raise HTTPException(
             status_code=502,
-            detail="AI 服务请求失败"
-        )
+            detail="AI 服务请求失败",
+        ) from exc
 
-    except RuntimeError:
+    except RuntimeError as exc:
         raise HTTPException(
             status_code=503,
-            detail="AI 服务配置或长期记忆读取失败"
-        )
+            detail="AI 服务配置或长期记忆读取失败",
+        ) from exc
 
-    except (sqlite3.Error, OSError, ValueError):
+    except (
+        sqlite3.Error,
+        OSError,
+        ValueError,
+    ) as exc:
         raise HTTPException(
             status_code=500,
-            detail="聊天数据处理失败"
-        )
+            detail="聊天数据处理失败",
+        ) from exc
 
 
+# ==========================================
+# 3. GET /chat/sessions/{session_id}
+# ==========================================
 
 @router.get(
     "/chat/sessions/{session_id}",
-    response_model=HistoryPageResponse
+    response_model=HistoryPageResponse,
 )
 def get_session_history(
     session_id: UUID,
-    limit: int = Query(default=50, ge=1, le=100),
-    offset: int = Query(default=0, ge=0)
+    limit: int = Query(
+        default=50,
+        ge=1,
+        le=100,
+    ),
+    offset: int = Query(
+        default=0,
+        ge=0,
+    ),
 ):
-    """分页获取指定会话的聊天历史。"""
+
     try:
         session_store.init_database()
 
         page = session_store.load_history_page(
             str(session_id),
             limit=limit,
-            offset=offset
+            offset=offset,
         )
 
         return HistoryPageResponse(
             session_id=str(session_id),
+            agent_id=page["agent_id"],
             messages=page["messages"],
             has_more=page["has_more"],
             limit=limit,
-            offset=offset
+            offset=offset,
         )
 
-    except LookupError:
+    except LookupError as exc:
         raise HTTPException(
             status_code=404,
-            detail="聊天会话不存在"
-        )
+            detail="聊天会话不存在",
+        ) from exc
 
-    except ValueError as e:
+    except ValueError as exc:
         raise HTTPException(
             status_code=422,
-            detail=str(e)
-        )
+            detail=str(exc),
+        ) from exc
 
-    except (sqlite3.Error, OSError):
+    except (
+        sqlite3.Error,
+        OSError,
+    ) as exc:
         raise HTTPException(
             status_code=500,
-            detail="聊天历史读取失败"
-        )
+            detail="聊天历史读取失败",
+        ) from exc
 
 
+# ==========================================
+# 4. GET /chat/sessions
+# ==========================================
 
 @router.get("/chat/sessions")
 def get_sessions():
-    """获取聊天会话列表。"""
+    """获取聊天会话列表及绑定的 Agent。"""
+
     try:
         session_store.init_database()
+
         return session_store.list_sessions()
 
-    except (sqlite3.Error, OSError):
+    except (
+        sqlite3.Error,
+        OSError,
+    ) as exc:
         raise HTTPException(
             status_code=500,
-            detail="读取会话列表失败"
-        )
+            detail="读取会话列表失败",
+        ) from exc
 
 
-@router.delete("/chat/sessions/{session_id}")
+# ==========================================
+# 5. DELETE /chat/sessions/{session_id}
+# ==========================================
+
+@router.delete(
+    "/chat/sessions/{session_id}"
+)
 def remove_session(session_id: UUID):
-    """删除一段聊天会话。"""
+    """删除指定聊天会话。"""
+
     try:
         session_store.init_database()
 
@@ -229,14 +351,16 @@ def remove_session(session_id: UUID):
         if not deleted:
             raise HTTPException(
                 status_code=404,
-                detail="聊天会话不存在"
+                detail="聊天会话不存在",
             )
 
         return {"deleted": True}
 
-    except (sqlite3.Error, OSError):
+    except (
+        sqlite3.Error,
+        OSError,
+    ) as exc:
         raise HTTPException(
             status_code=500,
-            detail="删除会话失败"
-        )
-
+            detail="删除会话失败",
+        ) from exc
