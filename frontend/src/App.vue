@@ -9,6 +9,8 @@ import {
   deleteSession
 } from './api/chat'
 
+import { renderMarkdown } from './utils/markdown'
+
 
 // =====================================
 // 1. 基础数据
@@ -28,20 +30,18 @@ const sessionId = ref(
   localStorage.getItem('flowmind_session_id') || null
 )
 
-// 历史会话列表
 const sessions = ref([])
 
-// 状态管理
 const isRestoring = ref(Boolean(sessionId.value))
 const isSending = ref(false)
 const isLoadingSessions = ref(false)
+
 const deletingSessionId = ref(null)
 
-// 错误提示
 const listError = ref('')
 
-// 聊天区域
 const messageList = ref(null)
+
 
 // 当前会话标题
 const currentSessionTitle = computed(() => {
@@ -54,10 +54,9 @@ const currentSessionTitle = computed(() => {
 
 
 // =====================================
-// 2. 工具函数
+// 2. 滚动到底部
 // =====================================
 
-// 滚动到底部
 async function scrollToBottom() {
   await nextTick()
 
@@ -67,7 +66,69 @@ async function scrollToBottom() {
   }
 }
 
-// 格式化时间
+
+// =====================================
+// 3. Markdown 代码复制功能
+// =====================================
+
+async function handleMessageListClick(event) {
+  const target = event.target
+
+  if (!(target instanceof Element)) {
+    return
+  }
+
+  const button = target.closest('.code-copy-button')
+
+  if (!button || !messageList.value?.contains(button)) {
+    return
+  }
+
+  const wrapper = button.closest('.code-block-wrapper')
+
+  const codeElement = wrapper?.querySelector('pre code')
+
+  if (!codeElement) {
+    return
+  }
+
+  const code = codeElement.textContent || ''
+
+  try {
+    if (!navigator.clipboard?.writeText) {
+      throw new Error('当前浏览器不支持剪贴板 API')
+    }
+
+    await navigator.clipboard.writeText(code)
+
+    button.textContent = '已复制'
+    button.classList.add('copied')
+
+    window.setTimeout(() => {
+      if (button.isConnected) {
+        button.textContent = '复制'
+        button.classList.remove('copied')
+      }
+    }, 1500)
+
+  } catch (error) {
+    console.error('复制代码失败：', error)
+
+    button.textContent = '复制失败'
+
+    window.setTimeout(() => {
+      if (button.isConnected) {
+        button.textContent = '复制'
+      }
+    }, 1500)
+  }
+}
+
+
+// =====================================
+// 4. 格式化时间
+// =====================================
+
 function formatDate(value) {
   if (!value) return ''
 
@@ -87,7 +148,7 @@ function formatDate(value) {
 
 
 // =====================================
-// 3. 获取历史会话列表
+// 5. 获取历史会话列表
 // =====================================
 
 async function loadSessions() {
@@ -97,7 +158,6 @@ async function loadSessions() {
   try {
     const response = await getSessions()
 
-    // 后端返回的是数组
     sessions.value = Array.isArray(response.data)
       ? response.data
       : []
@@ -114,7 +174,7 @@ async function loadSessions() {
 
 
 // =====================================
-// 4. 恢复指定会话
+// 6. 恢复指定会话
 // =====================================
 
 async function restoreSession(id) {
@@ -123,7 +183,7 @@ async function restoreSession(id) {
   isRestoring.value = true
 
   try {
-    console.log('正在切换会话：', id)
+    console.log('正在恢复会话：', id)
 
     const response = await getSessionHistory(id)
 
@@ -133,7 +193,6 @@ async function restoreSession(id) {
       throw new Error('历史消息数据格式不正确')
     }
 
-    // 恢复消息
     messages.value = data.messages.map(message => ({
       id: message.id,
       role: message.role,
@@ -144,7 +203,6 @@ async function restoreSession(id) {
       messages.value = [createWelcomeMessage()]
     }
 
-    // 更新当前会话 ID
     sessionId.value = id
 
     localStorage.setItem(
@@ -160,9 +218,14 @@ async function restoreSession(id) {
     console.error('恢复会话失败：', error)
 
     if (error.response?.status === 404) {
-      // 会话不存在或已经被删除
       if (sessionId.value === id) {
-        createNewSession()
+        sessionId.value = null
+
+        localStorage.removeItem(
+          'flowmind_session_id'
+        )
+
+        messages.value = [createWelcomeMessage()]
       }
 
       await loadSessions()
@@ -180,7 +243,7 @@ async function restoreSession(id) {
 
 
 // =====================================
-// 5. 切换历史会话
+// 7. 切换历史会话
 // =====================================
 
 async function switchSession(id) {
@@ -197,7 +260,7 @@ async function switchSession(id) {
 
 
 // =====================================
-// 6. 新建会话
+// 8. 新建会话
 // =====================================
 
 function createNewSession() {
@@ -205,17 +268,14 @@ function createNewSession() {
     return
   }
 
-  // 清除当前会话 ID
   sessionId.value = null
 
   localStorage.removeItem(
     'flowmind_session_id'
   )
 
-  // 清空聊天窗口
   messages.value = [createWelcomeMessage()]
 
-  // 清空输入框
   inputText.value = ''
 
   scrollToBottom()
@@ -223,7 +283,7 @@ function createNewSession() {
 
 
 // =====================================
-// 7. 删除历史会话
+// 9. 删除历史会话
 // =====================================
 
 async function removeSession(session) {
@@ -257,7 +317,6 @@ async function removeSession(session) {
       messages.value = [createWelcomeMessage()]
     }
 
-    // 刷新历史会话列表
     await loadSessions()
 
     console.log('会话删除成功！')
@@ -277,7 +336,7 @@ async function removeSession(session) {
 
 
 // =====================================
-// 8. 发送消息
+// 10. 发送消息
 // =====================================
 
 async function sendMessage() {
@@ -291,7 +350,6 @@ async function sendMessage() {
     return
   }
 
-  // 添加用户消息
   messages.value.push({
     id: `${Date.now()}-user`,
     role: 'user',
@@ -312,7 +370,6 @@ async function sendMessage() {
 
     const data = response.data
 
-    // 保存后端返回的 session_id
     sessionId.value = data.session_id
 
     localStorage.setItem(
@@ -320,14 +377,13 @@ async function sendMessage() {
       data.session_id
     )
 
-    // 添加 AI 回复
     messages.value.push({
       id: `${Date.now()}-assistant`,
       role: 'assistant',
       content: data.reply
     })
 
-    // 更新左侧历史会话列表
+    // 更新左侧历史列表
     await loadSessions()
 
   } catch (error) {
@@ -353,14 +409,12 @@ async function sendMessage() {
 
 
 // =====================================
-// 9. 页面初始化
+// 11. 页面初始化
 // =====================================
 
 onMounted(async () => {
-  // 首先加载左侧历史会话
   await loadSessions()
 
-  // 恢复上次使用的会话
   const savedSessionId = sessionId.value
 
   if (savedSessionId) {
@@ -377,10 +431,7 @@ onMounted(async () => {
 <template>
   <div class="app-shell">
 
-    <!-- ============================= -->
     <!-- 左侧历史会话栏 -->
-    <!-- ============================= -->
-
     <aside class="sidebar">
 
       <div class="sidebar-brand">
@@ -393,7 +444,6 @@ onMounted(async () => {
       </div>
 
 
-      <!-- 新建对话 -->
       <button
         class="new-chat-button"
         @click="createNewSession"
@@ -409,7 +459,6 @@ onMounted(async () => {
       </div>
 
 
-      <!-- 历史会话列表 -->
       <div class="history-list">
 
         <div
@@ -463,7 +512,6 @@ onMounted(async () => {
           </div>
 
 
-          <!-- 删除按钮 -->
           <button
             class="delete-button"
             title="删除会话"
@@ -490,10 +538,7 @@ onMounted(async () => {
     </aside>
 
 
-    <!-- ============================= -->
     <!-- 右侧聊天区域 -->
-    <!-- ============================= -->
-
     <main class="main">
 
       <header class="topbar">
@@ -518,7 +563,6 @@ onMounted(async () => {
 
       <section class="chat-card">
 
-        <!-- 聊天标题 -->
         <div class="chat-header">
 
           <div>
@@ -538,6 +582,7 @@ onMounted(async () => {
         <div
           class="message-list"
           ref="messageList"
+          @click="handleMessageListClick"
         >
 
           <div
@@ -559,9 +604,10 @@ onMounted(async () => {
                 {{ message.role === 'assistant' ? '鱼鱼' : '我' }}
               </div>
 
-              <div class="message-bubble">
-                {{ message.content }}
-              </div>
+              <div
+                class="message-bubble"
+                v-html="renderMarkdown(message.content)"
+              ></div>
 
             </div>
 
@@ -663,7 +709,9 @@ onMounted(async () => {
 }
 
 
-/* 左侧栏 */
+/* =========================
+   左侧导航栏
+========================= */
 
 .sidebar {
   height: 100vh;
@@ -832,7 +880,9 @@ onMounted(async () => {
 }
 
 
-/* 右侧主体 */
+/* =========================
+   右侧主体
+========================= */
 
 .main {
   min-width: 0;
@@ -915,7 +965,9 @@ onMounted(async () => {
 }
 
 
-/* 消息列表 */
+/* =========================
+   聊天消息
+========================= */
 
 .message-list {
   flex: 1;
@@ -960,6 +1012,7 @@ onMounted(async () => {
 
 .message-body {
   max-width: 78%;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -975,6 +1028,7 @@ onMounted(async () => {
 }
 
 .message-bubble {
+  max-width: 100%;
   padding: 12px 15px;
   border: 1px solid #e8edf4;
   border-radius: 4px 14px 14px 14px;
@@ -982,7 +1036,7 @@ onMounted(async () => {
   color: #344054;
   font-size: 14px;
   line-height: 1.8;
-  white-space: pre-wrap;
+  white-space: normal;
   overflow-wrap: anywhere;
 }
 
@@ -1008,7 +1062,212 @@ onMounted(async () => {
 }
 
 
-/* 输入区域 */
+/* =========================
+   Markdown 样式
+========================= */
+
+/* 段落 */
+.message-bubble :deep(p) {
+  margin: 0 0 12px;
+  line-height: 1.8;
+}
+
+.message-bubble :deep(p:last-child) {
+  margin-bottom: 0;
+}
+
+/* 标题 */
+.message-bubble :deep(h1),
+.message-bubble :deep(h2),
+.message-bubble :deep(h3),
+.message-bubble :deep(h4) {
+  margin: 18px 0 10px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.message-bubble :deep(h1) {
+  font-size: 22px;
+}
+
+.message-bubble :deep(h2) {
+  font-size: 19px;
+}
+
+.message-bubble :deep(h3) {
+  font-size: 16px;
+}
+
+/* 粗体 */
+.message-bubble :deep(strong) {
+  font-weight: 700;
+  color: #263b68;
+}
+
+.message-bubble :deep(em) {
+  font-style: italic;
+}
+
+/* 列表 */
+.message-bubble :deep(ul),
+.message-bubble :deep(ol) {
+  padding-left: 25px;
+  margin: 10px 0;
+}
+
+.message-bubble :deep(li) {
+  margin: 5px 0;
+  line-height: 1.8;
+}
+
+/* 链接 */
+.message-bubble :deep(a) {
+  color: #5274cf;
+  text-decoration: underline;
+  overflow-wrap: anywhere;
+}
+
+.message-bubble :deep(a:hover) {
+  color: #304fae;
+}
+
+/* 引用 */
+.message-bubble :deep(blockquote) {
+  margin: 12px 0;
+  padding: 8px 14px;
+  border-left: 3px solid #7995df;
+  background: #f3f6fc;
+  color: #68758b;
+  border-radius: 0 7px 7px 0;
+}
+
+/* 分割线 */
+.message-bubble :deep(hr) {
+  border: none;
+  border-top: 1px solid #e5eaf2;
+  margin: 16px 0;
+}
+
+/* 行内代码 */
+.message-bubble :deep(p code),
+.message-bubble :deep(li code),
+.message-bubble :deep(td code) {
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: #edf1f8;
+  color: #b04462;
+  font-family: Consolas, monospace;
+  font-size: 0.9em;
+}
+
+/* 表格 */
+.message-bubble :deep(table) {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 14px 0;
+  font-size: 13px;
+}
+
+.message-bubble :deep(th),
+.message-bubble :deep(td) {
+  padding: 9px 12px;
+  border: 1px solid #e1e7f0;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.message-bubble :deep(th) {
+  background: #f1f4fa;
+  font-weight: 700;
+}
+
+.message-bubble :deep(tr:nth-child(even)) {
+  background: #f9faff;
+}
+
+/* 图片 */
+.message-bubble :deep(img) {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+}
+
+
+/* =========================
+   代码块和复制按钮
+========================= */
+
+.message-bubble :deep(.code-block-wrapper) {
+  width: 100%;
+  margin: 14px 0;
+  overflow: hidden;
+  border-radius: 10px;
+  background: #18212f;
+}
+
+/* 代码块顶部工具栏 */
+.message-bubble :deep(.code-block-toolbar) {
+  height: 40px;
+  padding: 0 13px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #111a27;
+  color: #cbd5e1;
+}
+
+/* 语言名称 */
+.message-bubble :deep(.code-language) {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 1px;
+}
+
+/* 复制按钮 */
+.message-bubble :deep(.code-copy-button) {
+  padding: 5px 11px;
+  border: 1px solid #465367;
+  border-radius: 6px;
+  background: transparent;
+  color: #dce6f5;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.message-bubble :deep(.code-copy-button:hover) {
+  background: #344256;
+  border-color: #7c93b5;
+}
+
+.message-bubble :deep(.code-copy-button.copied) {
+  color: #68d391;
+  border-color: #68d391;
+}
+
+/* 代码区域 */
+.message-bubble :deep(pre.hljs) {
+  margin: 0;
+  padding: 16px;
+  border-radius: 0 0 10px 10px;
+  overflow-x: auto;
+  background: #18212f;
+  font-size: 13px;
+  line-height: 1.7;
+  max-width: 100%;
+}
+
+.message-bubble :deep(pre.hljs code) {
+  font-family: Consolas, "Courier New", monospace;
+  white-space: pre;
+}
+
+
+/* =========================
+   输入区域
+========================= */
 
 .composer {
   display: flex;
@@ -1078,7 +1337,9 @@ onMounted(async () => {
 }
 
 
-/* 小屏幕适配 */
+/* =========================
+   响应式布局
+========================= */
 
 @media (max-width: 760px) {
 
