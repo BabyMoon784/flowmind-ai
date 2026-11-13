@@ -10,7 +10,7 @@ from ai_service import chat_with_tools
 from long_term_memory import format_memories
 import task_service as service
 import session_store
-
+import agent_service
 
 router = APIRouter()
 
@@ -20,12 +20,21 @@ class ChatMessage(BaseModel):
     content: str
 
 
+
 class ChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    message: str = Field(min_length=1, max_length=2000)
+    message: str = Field(
+        min_length=1,
+        max_length=2000,
+    )
+
     session_id: UUID | None = None
+
     use_long_term_memory: bool = False
+
+    # 不传时使用默认 Agent
+    agent_id: UUID | None = None
 
 
 class ChatResponse(BaseModel):
@@ -76,14 +85,35 @@ def chat(request: ChatRequest):
         if request.use_long_term_memory:
             memory_context = format_memories()
 
+        
+        # 显式指定 Agent 时读取其配置
+        agent_config = None
+
+        if request.agent_id is not None:
+            agent_config = agent_service.get_agent(
+                str(request.agent_id)
+            )
+
+        # 保持旧版调用方式兼容
+        chat_options = {
+            "long_term_memory": memory_context,
+        }
+
+        if agent_config is not None:
+            chat_options["agent_config"] = agent_config
+
         answer = chat_with_tools(
             [
                 *history,
-                {"role": "user", "content": question}
+                {
+                    "role": "user",
+                    "content": question,
+                },
             ],
             service.get_task_summary,
-            long_term_memory=memory_context
+            **chat_options,
         )
+
 
         # 模型成功回复后，才保存这一轮对话
         updated_history = session_store.save_turn(
