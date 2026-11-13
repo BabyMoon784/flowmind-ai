@@ -3,6 +3,7 @@ from typing import Literal
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from chat_routes import router as chat_router
+from agent_routes import router as agent_router
 
 import task_service as service
 import sqlite3
@@ -14,6 +15,7 @@ app = FastAPI(
     version="0.3.0",
 )
 app.include_router(chat_router)
+app.include_router(agent_router)
 
 class TaskCreate(BaseModel):
     title: str = Field(min_length=1, max_length=100)
