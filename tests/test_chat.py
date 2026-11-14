@@ -136,9 +136,10 @@ def test_chat_memory_and_tool(client, monkeypatch):
         chat_routes, "chat_with_tools", record_chat
     )
     monkeypatch.setattr(
-        chat_routes, "format_memories",
-        lambda: "assistant_name: 鱼鱼"
-    )
+    chat_routes,
+    "format_agent_memories",
+    lambda agent_id: "assistant_name: 鱼鱼"
+)
 
     response = client.post(
         "/chat",

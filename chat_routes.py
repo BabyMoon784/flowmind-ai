@@ -11,7 +11,11 @@ import session_store
 import task_service as service
 
 from ai_service import chat_with_tools
-from long_term_memory import format_memories
+
+# Phase 3 Day 3：
+# 从 SQLite 读取当前 Agent 的长期记忆，
+# 不再读取旧版全局 JSON 记忆。
+from agent_memory_context import format_agent_memories
 
 
 router = APIRouter()
@@ -65,7 +69,7 @@ class HistoryPageResponse(BaseModel):
 
 # ==========================================
 # 2. POST /chat
-# Agent 绑定聊天
+# Agent 绑定聊天 + 独立长期记忆
 # ==========================================
 
 @router.post(
@@ -96,8 +100,9 @@ def chat(request: ChatRequest):
         # ==================================
 
         if new_session:
-            # 新会话：使用用户指定的 Agent
-            # 未指定时绑定默认 Agent
+
+            # 新会话使用用户指定的 Agent。
+            # 未指定则使用默认 My Agent。
             agent_id = (
                 str(request.agent_id)
                 if request.agent_id is not None
@@ -107,24 +112,24 @@ def chat(request: ChatRequest):
             history = []
 
         else:
-            # 旧会话：优先读取数据库中的绑定
+
+            # 旧会话必须读取数据库中
+            # 已绑定的 Agent。
             session = session_store.get_session(
                 session_id
             )
 
             agent_id = session["agent_id"]
 
-            # 显式传入其他 Agent：
-            # 必须拒绝，不能混用聊天历史
+            # 不允许把已有聊天会话
+            # 切换到另一个 Agent。
             if (
                 request.agent_id is not None
                 and str(request.agent_id) != agent_id
             ):
-                raise (
-                    session_store.SessionAgentMismatchError(
-                        "当前会话已绑定其他 Agent。"
-                        "如需切换，请创建新会话。"
-                    )
+                raise session_store.SessionAgentMismatchError(
+                    "当前会话已绑定其他 Agent。"
+                    "如需切换，请创建新会话。"
                 )
 
             history = session_store.load_history(
@@ -132,19 +137,18 @@ def chat(request: ChatRequest):
             )
 
         # ==================================
-        # B. 读取 Agent 配置
+        # B. 加载 Agent 配置
         # ==================================
 
         agent_config = None
 
-        # 对于非默认 Agent：
-        # 必须从数据库加载配置。
+        # 非默认 Agent 必须读取其配置。
         #
-        # 显式指定默认 Agent 时也加载配置。
+        # 显式指定默认 Agent 时也读取配置。
         #
-        # 默认 Agent 且未显式指定时，
-        # 保持旧的 chat_with_tools 调用签名，
-        # ai_service 内部会读取默认配置。
+        # 未显式指定默认 Agent 时，
+        # 继续保持旧接口调用方式，
+        # 由 ai_service 内部加载默认配置。
 
         if (
             agent_id != agent_service.DEFAULT_AGENT_ID
@@ -155,13 +159,28 @@ def chat(request: ChatRequest):
             )
 
         # ==================================
-        # C. 长期记忆
+        # C. Phase 3 Day 3：长期记忆
         # ==================================
 
         memory_context = ""
 
         if request.use_long_term_memory:
-            memory_context = format_memories()
+
+            # 这里必须使用最终解析出的 agent_id。
+            #
+            # 不能直接使用 request.agent_id，
+            # 因为继续旧会话时，
+            # 用户可能没有传入 agent_id。
+            #
+            # format_agent_memories 会：
+            # 1. 查询当前 Agent 的 SQLite 记忆
+            # 2. 排除其他 Agent 的记忆
+            # 3. 限制上下文长度
+            # 4. 没有记忆时返回空字符串
+
+            memory_context = format_agent_memories(
+                agent_id
+            )
 
         # ==================================
         # D. 调用 AI
@@ -189,11 +208,11 @@ def chat(request: ChatRequest):
         )
 
         # ==================================
-        # E. 保存聊天
+        # E. 保存聊天记录
         # ==================================
 
         # AI 成功返回后才保存这一轮消息。
-        # 写入前会再次检查 Agent 绑定关系。
+        # 保存时会再次检查 Agent 绑定关系。
 
         updated_history = session_store.save_turn(
             session_id,
@@ -203,12 +222,20 @@ def chat(request: ChatRequest):
             agent_id=agent_id,
         )
 
+        # ==================================
+        # F. 返回响应
+        # ==================================
+
         return ChatResponse(
             session_id=session_id,
             agent_id=agent_id,
             reply=answer,
             history=updated_history,
         )
+
+    # ======================================
+    # 错误处理
+    # ======================================
 
     except (
         session_store.SessionAgentMismatchError
