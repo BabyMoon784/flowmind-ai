@@ -178,9 +178,11 @@ def chat(request: ChatRequest):
             # 3. 限制上下文长度
             # 4. 没有记忆时返回空字符串
 
-            memory_context = format_agent_memories(
-                agent_id
-            )
+           memory_context = format_agent_memories(
+    		agent_id,
+    		query=question,
+    		limit=5,
+	)
 
         # ==================================
         # D. 调用 AI

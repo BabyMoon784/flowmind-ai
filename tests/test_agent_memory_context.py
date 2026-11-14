@@ -175,7 +175,7 @@ def test_existing_session_keeps_agent_memory(
     first = client.post(
         "/chat",
         json={
-            "message": "你好",
+            "message": "告诉我只属于 Agent A 的记忆",
             "agent_id": agent_a,
             "use_long_term_memory": True,
         },
@@ -190,7 +190,7 @@ def test_existing_session_keeps_agent_memory(
     second = client.post(
         "/chat",
         json={
-            "message": "继续刚才的话题",
+            "message": "继续介绍只属于 Agent A 的记忆",
             "session_id": session_id,
             "use_long_term_memory": True,
         },

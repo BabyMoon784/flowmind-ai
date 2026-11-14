@@ -2,11 +2,17 @@
 """
 Agent 长期记忆上下文模块。
 
-从 SQLite 读取指定 Agent 的记忆，
-转换为可传入 Prompt Builder 的文本。
+Phase 3 Day 4:
+- 不提供 query：保留 Day 3 的最近记忆模式
+- 提供 query：使用相关性检索
+- 限制记忆数量和上下文长度
 """
 
 import memory_store
+
+from memory_retrieval import (
+    search_relevant_memories,
+)
 
 
 MAX_MEMORY_ITEMS = 30
@@ -16,52 +22,71 @@ MAX_MEMORY_CHARS = 6000
 def format_agent_memories(
     agent_id,
     *,
+    query=None,
     db_path=None,
     limit=MAX_MEMORY_ITEMS,
     max_chars=MAX_MEMORY_CHARS,
 ):
     """
-    格式化指定 Agent 的长期记忆。
+    格式化指定 Agent 的记忆。
 
-    返回:
-        str: 格式化后的记忆文本
+    query=None:
+        兼容 Day 3，读取最近记忆。
 
-    特点:
-        1. 只查询指定 Agent
-        2. 不混用其他 Agent 的记忆
-        3. 限制记忆数量和总长度
-        4. 没有记忆时返回空字符串
+    query="用户问题":
+        按相关性检索。
+        无匹配时返回空字符串。
     """
 
     if not isinstance(agent_id, str):
-        raise ValueError("agent_id 必须是字符串")
+        raise ValueError(
+            "agent_id 必须是字符串"
+        )
 
     agent_id = agent_id.strip()
 
     if not agent_id:
-        raise ValueError("agent_id 不能为空")
+        raise ValueError(
+            "agent_id 不能为空"
+        )
 
     if (
         isinstance(limit, bool)
         or not isinstance(limit, int)
         or not 1 <= limit <= 500
     ):
-        raise ValueError("limit 必须是 1～500 的整数")
+        raise ValueError(
+            "limit 必须是 1～500 的整数"
+        )
 
     if (
         isinstance(max_chars, bool)
         or not isinstance(max_chars, int)
         or max_chars < 1
     ):
-        raise ValueError("max_chars 必须是正整数")
+        raise ValueError(
+            "max_chars 必须是正整数"
+        )
 
-    # Day 1 的记忆服务已经提供 Agent 隔离
-    memories = memory_store.list_memories(
-        agent_id,
-        limit=limit,
-        offset=0,
-        db_path=db_path,
-    )
+    if query is None:
+
+        # 兼容旧调用，读取最近记忆
+        memories = memory_store.list_memories(
+            agent_id,
+            limit=limit,
+            offset=0,
+            db_path=db_path,
+        )
+
+    else:
+
+        # Day 4：根据用户问题选取相关记忆
+        memories = search_relevant_memories(
+            agent_id,
+            query,
+            limit=limit,
+            db_path=db_path,
+        )
 
     if not memories:
         return ""
@@ -77,11 +102,14 @@ def format_agent_memories(
             f"{memory['content']}"
         )
 
-        needed = len(line) + (1 if lines else 0)
+        needed = len(line)
 
-        # 超出上下文预算时停止加入新记忆
+        if lines:
+            needed += 1
+
         if used_chars + needed > max_chars:
-            break
+            # 继续检查其他较短记忆
+            continue
 
         lines.append(line)
         used_chars += needed
