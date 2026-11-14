@@ -16,3 +16,9 @@ long_term_memoey.json.tmp
 *.db-shm
 # Local data backups
 .local_backups/
+# VS Code local settings
+.vscode/
+.env
+*.db
+*_backup_*.json
+*_backup_*.db
