@@ -5,6 +5,15 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import model_validator
+from openai import OpenAIError
+
+import session_store
+
+from memory_extraction import (
+    extract_memory_candidates,
+    MemoryExtractionError,
+)
 
 import agent_service
 import memory_store
@@ -351,3 +360,177 @@ def delete_memory(
             status_code=500,
             detail="删除记忆失败",
         )
+
+# ==========================================
+# Phase 3 Day 5
+# AI 长期记忆提取接口
+# ==========================================
+
+class MemoryExtractRequest(BaseModel):
+    """
+    两种提取方式，二选一：
+
+    1. text：从指定文本提取
+    2. session_id：从已有聊天会话提取
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: UUID
+
+    text: str | None = Field(
+        default=None,
+        max_length=4000,
+    )
+
+    session_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def validate_source(self):
+
+        if (
+            (self.text is None)
+            == (self.session_id is None)
+        ):
+            raise ValueError(
+                "text 和 session_id 必须且只能提供一个"
+            )
+
+        if self.text is not None:
+
+            self.text = self.text.strip()
+
+            if not self.text:
+                raise ValueError(
+                    "待提取文本不能为空"
+                )
+
+        return self
+
+
+@router.post(
+    "/memories/extract",
+    status_code=200,
+)
+def extract_memories(request: MemoryExtractRequest):
+    """
+    从用户输入或已有聊天会话中提取候选记忆。
+
+    本接口不会保存任何长期记忆。
+    用户确认后，使用 POST /memories 保存。
+    """
+
+    agent_id = str(request.agent_id)
+
+    try:
+
+        # A. 校验 Agent 是否存在
+        agent_service.get_agent(agent_id)
+
+        # B. 获取待提取文本
+        if request.session_id is not None:
+
+            session_id = str(
+                request.session_id
+            )
+
+            session_store.init_database()
+
+            session = session_store.get_session(
+                session_id
+            )
+
+            # 必须是该 Agent 绑定的聊天会话
+            if session["agent_id"] != agent_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "该聊天会话不属于指定 Agent，"
+                        "无法提取记忆"
+                    ),
+                )
+
+            # 只读取最近的聊天消息
+            history = session_store.load_history(
+                session_id,
+                limit=20,
+            )
+
+            # 仅从用户消息中提取长期记忆。
+            # AI 的回复不作为用户事实来源。
+            user_messages = [
+                item["content"]
+                for item in history
+                if item["role"] == "user"
+            ]
+
+            source_text = "\n".join(
+                f"用户：{message}"
+                for message in user_messages
+            )
+
+            # 控制发给模型的文本长度
+            source_text = source_text[-4000:]
+
+        else:
+            source_text = request.text
+
+        # C. 空会话不需要调用模型
+        if not source_text:
+            candidates = []
+        else:
+            candidates = extract_memory_candidates(
+                source_text
+            )
+
+        # D. 仅返回预览，不执行数据库写入
+        return {
+            "agent_id": agent_id,
+            "candidates": candidates,
+            "count": len(candidates),
+            "requires_confirmation": True,
+            "saved": False,
+        }
+
+    except HTTPException:
+        raise
+
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="Agent 或聊天会话不存在",
+        ) from exc
+
+    except MemoryExtractionError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=str(exc),
+        ) from exc
+
+    except OpenAIError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="AI 记忆提取请求失败",
+        ) from exc
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=str(exc),
+        ) from exc
+
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=str(exc),
+        ) from exc
+
+    except (
+        sqlite3.Error,
+        OSError,
+    ) as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="记忆提取数据读取失败",
+        ) from exc
+
