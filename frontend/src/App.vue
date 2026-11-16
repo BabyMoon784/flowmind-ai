@@ -1,143 +1,132 @@
-
 <script setup>
-import { ref, nextTick, onMounted, computed } from 'vue'
+import { ref, nextTick, onMounted, computed, watch } from 'vue'
 
 import {
   sendChat,
   getSessionHistory,
   getSessions,
-  deleteSession
+  deleteSession,
+  getAgents
 } from './api/chat'
 
 import { renderMarkdown } from './utils/markdown'
 
+// Phase 4 Day 1：保留原有聊天、Markdown、代码复制和历史会话功能。
+const DEFAULT_AGENT_ID = '00000000-0000-4000-8000-000000000001'
+const AGENT_STORAGE_KEY = 'flowmind_agent_id'
+const SESSION_STORAGE_KEY = 'flowmind_session_id'
+const MEMORY_STORAGE_KEY = 'flowmind_use_memory'
 
-// =====================================
-// 1. 基础数据
-// =====================================
+const agents = ref([])
+const agentError = ref('')
+const selectedAgentId = ref(
+  localStorage.getItem(AGENT_STORAGE_KEY) || DEFAULT_AGENT_ID
+)
+const useLongTermMemory = ref(
+  localStorage.getItem(MEMORY_STORAGE_KEY) === 'true'
+)
+
+const currentAgent = computed(() =>
+  agents.value.find(agent => agent.id === selectedAgentId.value)
+)
+const currentAgentName = computed(() =>
+  currentAgent.value?.name || 'My Agent'
+)
+const currentAgentDescription = computed(() =>
+  currentAgent.value?.description || '你的个人 AI 助手'
+)
 
 const createWelcomeMessage = () => ({
   id: 'welcome',
   role: 'assistant',
-  content: '你好呀！我是鱼鱼。有什么想法，都可以和我说。'
+  content: currentAgentName.value === 'My Agent'
+    ? '你好呀！我是鱼鱼。有什么想法，都可以和我说。'
+    : `你好！我是 ${currentAgentName.value}，有什么可以帮你？`
 })
 
 const messages = ref([createWelcomeMessage()])
-
 const inputText = ref('')
-
-const sessionId = ref(
-  localStorage.getItem('flowmind_session_id') || null
-)
-
+const sessionId = ref(localStorage.getItem(SESSION_STORAGE_KEY) || null)
 const sessions = ref([])
 
 const isRestoring = ref(Boolean(sessionId.value))
 const isSending = ref(false)
 const isLoadingSessions = ref(false)
-
 const deletingSessionId = ref(null)
-
 const listError = ref('')
-
+const historyHasMore = ref(false)
 const messageList = ref(null)
 
-
-// 当前会话标题
 const currentSessionTitle = computed(() => {
-  const current = sessions.value.find(
-    item => item.id === sessionId.value
-  )
-
+  const current = sessions.value.find(item => item.id === sessionId.value)
   return current?.title || '新对话'
 })
 
+// 旧数据没有 agent_id 时，视为默认 Agent 的会话。
+function sessionAgentId(session) {
+  return session?.agent_id || DEFAULT_AGENT_ID
+}
 
-// =====================================
-// 2. 滚动到底部
-// =====================================
+const filteredSessions = computed(() =>
+  sessions.value.filter(session =>
+    sessionAgentId(session) === selectedAgentId.value
+  )
+)
+
+watch(selectedAgentId, agentId => {
+  localStorage.setItem(AGENT_STORAGE_KEY, agentId)
+})
+
+watch(useLongTermMemory, enabled => {
+  localStorage.setItem(MEMORY_STORAGE_KEY, String(enabled))
+})
 
 async function scrollToBottom() {
   await nextTick()
-
   if (messageList.value) {
-    messageList.value.scrollTop =
-      messageList.value.scrollHeight
+    messageList.value.scrollTop = messageList.value.scrollHeight
   }
 }
 
-
-// =====================================
-// 3. Markdown 代码复制功能
-// =====================================
-
+// 保留原先经过 DOMPurify 清理的 Markdown 代码块复制功能。
 async function handleMessageListClick(event) {
   const target = event.target
-
-  if (!(target instanceof Element)) {
-    return
-  }
+  if (!(target instanceof Element)) return
 
   const button = target.closest('.code-copy-button')
-
-  if (!button || !messageList.value?.contains(button)) {
-    return
-  }
+  if (!button || !messageList.value?.contains(button)) return
 
   const wrapper = button.closest('.code-block-wrapper')
-
   const codeElement = wrapper?.querySelector('pre code')
-
-  if (!codeElement) {
-    return
-  }
+  if (!codeElement) return
 
   const code = codeElement.textContent || ''
-
   try {
     if (!navigator.clipboard?.writeText) {
       throw new Error('当前浏览器不支持剪贴板 API')
     }
-
     await navigator.clipboard.writeText(code)
-
     button.textContent = '已复制'
     button.classList.add('copied')
-
     window.setTimeout(() => {
       if (button.isConnected) {
         button.textContent = '复制'
         button.classList.remove('copied')
       }
     }, 1500)
-
   } catch (error) {
     console.error('复制代码失败：', error)
-
     button.textContent = '复制失败'
-
     window.setTimeout(() => {
-      if (button.isConnected) {
-        button.textContent = '复制'
-      }
+      if (button.isConnected) button.textContent = '复制'
     }, 1500)
   }
 }
 
-
-// =====================================
-// 4. 格式化时间
-// =====================================
-
 function formatDate(value) {
   if (!value) return ''
-
-  const date = new Date(value.replace(' ', 'T'))
-
-  if (Number.isNaN(date.getTime())) {
-    return value
-  }
-
+  const date = new Date(String(value).replace(' ', 'T'))
+  if (Number.isNaN(date.getTime())) return value
   return date.toLocaleString('zh-CN', {
     month: '2-digit',
     day: '2-digit',
@@ -146,277 +135,194 @@ function formatDate(value) {
   })
 }
 
+async function loadAgents() {
+  agentError.value = ''
+  try {
+    const response = await getAgents()
+    const payload = response.data
+    const list = Array.isArray(payload)
+      ? payload
+      : (payload?.agents || payload?.items || [])
+    if (!Array.isArray(list)) throw new Error('Agent 列表格式不正确')
 
-// =====================================
-// 5. 获取历史会话列表
-// =====================================
+    agents.value = list
+    if (list.length && !list.some(agent => agent.id === selectedAgentId.value)) {
+      selectedAgentId.value = list.some(agent => agent.id === DEFAULT_AGENT_ID)
+        ? DEFAULT_AGENT_ID
+        : list[0].id
+    }
+
+    // 页面上的欢迎语应与当前 Agent 保持一致。
+    if (!sessionId.value && messages.value.length === 1 &&
+        messages.value[0].id === 'welcome') {
+      messages.value = [createWelcomeMessage()]
+    }
+  } catch (error) {
+    console.error('获取 Agent 列表失败：', error)
+    agentError.value = 'Agent 列表加载失败，请检查后端。'
+  }
+}
 
 async function loadSessions() {
   isLoadingSessions.value = true
   listError.value = ''
-
   try {
     const response = await getSessions()
-
-    sessions.value = Array.isArray(response.data)
-      ? response.data
-      : []
-
+    const payload = response.data
+    const list = Array.isArray(payload)
+      ? payload
+      : (payload?.sessions || [])
+    if (!Array.isArray(list)) throw new Error('会话列表格式不正确')
+    sessions.value = list.map(item => ({
+      ...item,
+      id: item.id || item.session_id
+    }))
   } catch (error) {
     console.error('获取会话列表失败：', error)
-
     listError.value = '历史会话加载失败，请检查后端服务。'
-
   } finally {
     isLoadingSessions.value = false
   }
 }
 
-
-// =====================================
-// 6. 恢复指定会话
-// =====================================
-
 async function restoreSession(id) {
-  if (!id) return
-
+  if (!id || isSending.value) return
   isRestoring.value = true
-
   try {
-    console.log('正在恢复会话：', id)
-
     const response = await getSessionHistory(id)
-
     const data = response.data
-
     if (!Array.isArray(data.messages)) {
       throw new Error('历史消息数据格式不正确')
     }
 
-    messages.value = data.messages.map(message => ({
-      id: message.id,
-      role: message.role,
-      content: message.content
-    }))
+    const fromList = sessions.value.find(item => item.id === id)
+    const boundAgentId = data.agent_id || fromList?.agent_id
+    if (boundAgentId && boundAgentId !== selectedAgentId.value) {
+      selectedAgentId.value = boundAgentId
+    }
 
+    // 后端分页返回的是从新到旧，界面改为从旧到新。
+    messages.value = [...data.messages]
+      .sort((a, b) => Number(a.id) - Number(b.id))
+      .map(message => ({
+        id: message.id,
+        role: message.role,
+        content: message.content
+      }))
+
+    historyHasMore.value = Boolean(data.has_more)
     if (messages.value.length === 0) {
       messages.value = [createWelcomeMessage()]
     }
 
     sessionId.value = id
-
-    localStorage.setItem(
-      'flowmind_session_id',
-      id
-    )
-
+    localStorage.setItem(SESSION_STORAGE_KEY, id)
     await scrollToBottom()
-
-    console.log('会话恢复成功！')
-
   } catch (error) {
     console.error('恢复会话失败：', error)
-
     if (error.response?.status === 404) {
-      if (sessionId.value === id) {
-        sessionId.value = null
-
-        localStorage.removeItem(
-          'flowmind_session_id'
-        )
-
-        messages.value = [createWelcomeMessage()]
-      }
-
+      if (sessionId.value === id) createNewSession(true)
       await loadSessions()
-
-      alert('这个会话已经不存在了。')
-
+      window.alert('这个会话已经不存在了。')
     } else {
-      alert('读取聊天记录失败，请检查后端服务。')
+      window.alert('读取聊天记录失败，请检查后端服务。')
     }
-
   } finally {
     isRestoring.value = false
   }
 }
 
-
-// =====================================
-// 7. 切换历史会话
-// =====================================
-
 async function switchSession(id) {
-  if (
-    id === sessionId.value ||
-    isSending.value ||
-    isRestoring.value
-  ) {
-    return
-  }
-
+  if (id === sessionId.value || isSending.value || isRestoring.value) return
   await restoreSession(id)
 }
 
-
-// =====================================
-// 8. 新建会话
-// =====================================
-
-function createNewSession() {
-  if (isSending.value || isRestoring.value) {
-    return
-  }
-
+// force 仅供恢复已删除的会话时清理本地状态使用。
+function createNewSession(force = false) {
+  if (!force && (isSending.value || isRestoring.value)) return
   sessionId.value = null
-
-  localStorage.removeItem(
-    'flowmind_session_id'
-  )
-
+  localStorage.removeItem(SESSION_STORAGE_KEY)
+  historyHasMore.value = false
   messages.value = [createWelcomeMessage()]
-
   inputText.value = ''
-
   scrollToBottom()
 }
 
-
-// =====================================
-// 9. 删除历史会话
-// =====================================
+function handleAgentChange() {
+  // 选了另一个 Agent，必须新建聊天，不能复用之前绑定的 session_id。
+  createNewSession()
+}
 
 async function removeSession(session) {
-  if (
-    isSending.value ||
-    isRestoring.value ||
-    deletingSessionId.value
-  ) {
-    return
-  }
-
+  if (isSending.value || isRestoring.value || deletingSessionId.value) return
   const confirmed = window.confirm(
-    `确定删除会话「${session.title}」吗？\n删除后无法恢复。`
+    `确定删除会话「${session.title || '新对话'}」吗？\n删除后无法恢复。`
   )
-
   if (!confirmed) return
 
   deletingSessionId.value = session.id
-
   try {
     await deleteSession(session.id)
-
-    // 如果删除的是当前会话
-    if (sessionId.value === session.id) {
-      sessionId.value = null
-
-      localStorage.removeItem(
-        'flowmind_session_id'
-      )
-
-      messages.value = [createWelcomeMessage()]
-    }
-
+    if (sessionId.value === session.id) createNewSession()
     await loadSessions()
-
-    console.log('会话删除成功！')
-
   } catch (error) {
     console.error('删除会话失败：', error)
-
-    alert(
-      error.response?.data?.detail ||
-      '删除失败，请检查后端服务。'
-    )
-
+    window.alert(error.response?.data?.detail || '删除失败，请检查后端服务。')
   } finally {
     deletingSessionId.value = null
   }
 }
 
-
-// =====================================
-// 10. 发送消息
-// =====================================
+function formatRequestError(error) {
+  const detail = error.response?.data?.detail
+  if (typeof detail === 'string') return detail
+  if (detail) return JSON.stringify(detail)
+  return error.message || '未知错误'
+}
 
 async function sendMessage() {
   const content = inputText.value.trim()
-
-  if (
-    !content ||
-    isSending.value ||
-    isRestoring.value
-  ) {
-    return
-  }
+  if (!content || isSending.value || isRestoring.value) return
 
   messages.value.push({
-    id: `${Date.now()}-user`,
+    id: `user-${Date.now()}`,
     role: 'user',
     content
   })
-
   inputText.value = ''
-
   isSending.value = true
-
   await scrollToBottom()
 
   try {
-    const response = await sendChat(
-      content,
-      sessionId.value
-    )
-
+    const response = await sendChat(content, sessionId.value, {
+      agentId: selectedAgentId.value,
+      useLongTermMemory: useLongTermMemory.value
+    })
     const data = response.data
-
     sessionId.value = data.session_id
-
-    localStorage.setItem(
-      'flowmind_session_id',
-      data.session_id
-    )
-
+    localStorage.setItem(SESSION_STORAGE_KEY, data.session_id)
     messages.value.push({
-      id: `${Date.now()}-assistant`,
+      id: `assistant-${Date.now()}`,
       role: 'assistant',
       content: data.reply
     })
-
-    // 更新左侧历史列表
     await loadSessions()
-
   } catch (error) {
     console.error('聊天请求失败：', error)
-
-    const errorMessage =
-      error.response?.data?.detail ||
-      error.message ||
-      '未知错误'
-
     messages.value.push({
-      id: `${Date.now()}-error`,
+      id: `error-${Date.now()}`,
       role: 'assistant',
-      content: `请求失败：${errorMessage}`
+      content: `请求失败：${formatRequestError(error)}`
     })
-
   } finally {
     isSending.value = false
-
     await scrollToBottom()
   }
 }
 
-
-// =====================================
-// 11. 页面初始化
-// =====================================
-
 onMounted(async () => {
-  await loadSessions()
-
+  await Promise.all([loadAgents(), loadSessions()])
   const savedSessionId = sessionId.value
-
   if (savedSessionId) {
     await restoreSession(savedSessionId)
   } else {
@@ -424,9 +330,7 @@ onMounted(async () => {
     isRestoring.value = false
   }
 })
-
 </script>
-
 
 <template>
   <div class="app-shell">
@@ -454,6 +358,35 @@ onMounted(async () => {
       </button>
 
 
+      <div class="sidebar-agent-section">
+        <label class="sidebar-agent-label" for="agent-select">
+          当前 Agent
+        </label>
+        <select
+          id="agent-select"
+          v-model="selectedAgentId"
+          class="agent-select"
+          :disabled="isSending || isRestoring"
+          @change="handleAgentChange"
+        >
+          <option
+            v-for="agent in agents"
+            :key="agent.id"
+            :value="agent.id"
+          >
+            {{ agent.name }}
+          </option>
+          <option
+            v-if="agents.length === 0"
+            :value="selectedAgentId"
+          >
+            My Agent
+          </option>
+        </select>
+        <p v-if="agentError" class="agent-error">{{ agentError }}</p>
+      </div>
+
+
       <div class="sidebar-title">
         最近对话
       </div>
@@ -476,7 +409,7 @@ onMounted(async () => {
         </div>
 
         <div
-          v-else-if="sessions.length === 0"
+          v-else-if="filteredSessions.length === 0"
           class="empty-history"
         >
           暂无历史会话
@@ -485,7 +418,7 @@ onMounted(async () => {
 
 
         <div
-          v-for="session in sessions"
+          v-for="session in filteredSessions"
           :key="session.id"
           class="session-item"
           :class="{
@@ -553,9 +486,15 @@ onMounted(async () => {
           </div>
         </div>
 
-        <div class="connection-status">
-          <span class="status-dot"></span>
-          {{ isRestoring ? '恢复中' : '已连接' }}
+        <div class="topbar-actions">
+          <label class="memory-switch" title="开启后会检索当前 Agent 的长期记忆">
+            <input type="checkbox" v-model="useLongTermMemory" />
+            <span>长期记忆</span>
+          </label>
+          <div class="connection-status">
+            <span class="status-dot"></span>
+            {{ isRestoring ? '恢复中' : '已连接' }}
+          </div>
         </div>
 
       </header>
@@ -568,11 +507,9 @@ onMounted(async () => {
           <div>
             <div class="eyebrow">FLOWMIND AI</div>
 
-            <h1>和鱼鱼聊天</h1>
+            <h1>和 {{ currentAgentName }} 聊天</h1>
 
-            <p>
-              有什么想法，都可以和我说。
-            </p>
+            <p>{{ currentAgentDescription }}</p>
           </div>
 
         </div>
@@ -585,6 +522,10 @@ onMounted(async () => {
           @click="handleMessageListClick"
         >
 
+          <p v-if="historyHasMore" class="history-notice">
+            当前显示最近 100 条消息，较早消息可在后续版本中继续加载。
+          </p>
+
           <div
             v-for="message in messages"
             :key="message.id"
@@ -595,13 +536,13 @@ onMounted(async () => {
           >
 
             <div class="avatar">
-              {{ message.role === 'assistant' ? '鱼' : '我' }}
+              {{ message.role === 'assistant' ? currentAgentName.charAt(0) : '我' }}
             </div>
 
             <div class="message-body">
 
               <div class="message-author">
-                {{ message.role === 'assistant' ? '鱼鱼' : '我' }}
+                {{ message.role === 'assistant' ? currentAgentName : '我' }}
               </div>
 
               <div
@@ -620,16 +561,16 @@ onMounted(async () => {
             class="message-row assistant"
           >
 
-            <div class="avatar">鱼</div>
+            <div class="avatar">{{ currentAgentName.charAt(0) }}</div>
 
             <div class="message-body">
 
               <div class="message-author">
-                鱼鱼
+                {{ currentAgentName }}
               </div>
 
               <div class="message-bubble thinking">
-                鱼鱼正在思考...
+                {{ currentAgentName }} 正在思考...
               </div>
 
             </div>
@@ -648,7 +589,7 @@ onMounted(async () => {
           <textarea
             v-model="inputText"
             rows="2"
-            placeholder="给鱼鱼发送消息..."
+            :placeholder="`给 ${currentAgentName} 发送消息...`"
             :disabled="isRestoring"
             @keydown.enter.exact.prevent="sendMessage"
           ></textarea>
@@ -674,7 +615,7 @@ onMounted(async () => {
             isRestoring
               ? '正在恢复历史对话...'
               : isSending
-                ? '鱼鱼正在思考...'
+                ? `${currentAgentName} 正在思考...`
                 : 'FlowMind AI · 真实 AI 对话'
           }}
         </div>
@@ -690,6 +631,8 @@ onMounted(async () => {
 
   </div>
 </template>
+
+
 
 
 <style scoped>
@@ -1396,6 +1339,100 @@ onMounted(async () => {
     min-height: 70vh;
   }
 
+}
+
+
+
+/* =========================
+   Phase 4 Day 1：Agent 与长期记忆
+========================= */
+
+.sidebar-agent-section {
+  margin-top: 18px;
+  padding: 0 2px;
+}
+
+.sidebar-agent-label {
+  display: block;
+  margin: 0 6px 9px;
+  color: #929cac;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.agent-select {
+  width: 100%;
+  min-height: 41px;
+  padding: 9px 10px;
+  border: 1px solid #dce5fa;
+  border-radius: 9px;
+  background: #fff;
+  color: #344054;
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+}
+
+.agent-select:focus-visible {
+  border-color: #6685db;
+  box-shadow: 0 0 0 3px rgba(82, 111, 203, 0.12);
+}
+
+.agent-select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.agent-error {
+  margin: 8px 5px 0;
+  color: #c45252;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+
+.memory-switch {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #67758c;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.memory-switch input {
+  accent-color: #526fcb;
+  width: 15px;
+  height: 15px;
+}
+
+.history-notice {
+  margin: 0;
+  padding: 9px 11px;
+  border-radius: 8px;
+  background: #eef3ff;
+  color: #6a7b9a;
+  font-size: 12px;
+}
+
+@media (max-width: 560px) {
+  .sidebar-agent-section {
+    margin-top: 12px;
+  }
+
+  .topbar-actions {
+    gap: 10px;
+  }
+
+  .connection-status {
+    font-size: 11px;
+  }
 }
 
 </style>
