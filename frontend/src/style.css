@@ -27,4 +27,16 @@ textarea {
 #app {
   min-height: 100vh;
 }
+/* 数学公式显示 */
+.katex-display {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 8px 0;
+}
 
+/* 防止长内容撑开聊天区域 */
+.message-bubble {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

@@ -22,3 +22,22 @@ long_term_memoey.json.tmp
 *.db
 *_backup_*.json
 *_backup_*.db
+# Frontend dependencies and build
+frontend/node_modules/
+frontend/dist/
+
+# Backup files
+*.bak
+*.zip
+
+# Additional SQLite formats
+*.sqlite
+*.sqlite3
+
+# Temporary memory files
+long_term_memory.json.tmp
+
+# Python test and tooling cache
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/

@@ -1,132 +1,218 @@
+
 <script setup>
-import { ref, nextTick, onMounted, computed, watch } from 'vue'
+import {
+  ref,
+  computed,
+  watch,
+  nextTick,
+  onMounted
+} from 'vue'
 
 import {
   sendChat,
-  getSessionHistory,
+  getAgents,
   getSessions,
+  getSessionHistory,
   deleteSession,
-  getAgents
+  extractAttachment,
+  analyzeImage
 } from './api/chat'
 
 import { renderMarkdown } from './utils/markdown'
 
-// Phase 4 Day 1：保留原有聊天、Markdown、代码复制和历史会话功能。
-const DEFAULT_AGENT_ID = '00000000-0000-4000-8000-000000000001'
+import AgentManager from './components/AgentManager.vue'
+import MemoryManager from './components/MemoryManager.vue'
+
+
+// ==========================================
+// 1. 基础配置
+// ==========================================
+
+const DEFAULT_AGENT_ID =
+  '00000000-0000-4000-8000-000000000001'
+
 const AGENT_STORAGE_KEY = 'flowmind_agent_id'
 const SESSION_STORAGE_KEY = 'flowmind_session_id'
 const MEMORY_STORAGE_KEY = 'flowmind_use_memory'
 
+const MAX_FILE_BYTES = 5 * 1024 * 1024
+
+const IMAGE_EXTENSIONS = [
+  'png', 'jpg', 'jpeg'
+]
+
+const ALLOWED_EXTENSIONS = [
+  'txt', 'md', 'pdf', 'docx',
+  ...IMAGE_EXTENSIONS
+]
+
+
+// ==========================================
+// 2. 状态
+// ==========================================
+
 const agents = ref([])
-const agentError = ref('')
+const sessions = ref([])
+const messages = ref([])
+
+const inputText = ref('')
+
 const selectedAgentId = ref(
-  localStorage.getItem(AGENT_STORAGE_KEY) || DEFAULT_AGENT_ID
+  localStorage.getItem(AGENT_STORAGE_KEY)
+  || DEFAULT_AGENT_ID
 )
+
+const sessionId = ref(
+  localStorage.getItem(SESSION_STORAGE_KEY)
+  || null
+)
+
 const useLongTermMemory = ref(
   localStorage.getItem(MEMORY_STORAGE_KEY) === 'true'
 )
 
-const currentAgent = computed(() =>
-  agents.value.find(agent => agent.id === selectedAgentId.value)
-)
-const currentAgentName = computed(() =>
-  currentAgent.value?.name || 'My Agent'
-)
-const currentAgentDescription = computed(() =>
-  currentAgent.value?.description || '你的个人 AI 助手'
-)
-
-const createWelcomeMessage = () => ({
-  id: 'welcome',
-  role: 'assistant',
-  content: currentAgentName.value === 'My Agent'
-    ? '你好呀！我是鱼鱼。有什么想法，都可以和我说。'
-    : `你好！我是 ${currentAgentName.value}，有什么可以帮你？`
-})
-
-const messages = ref([createWelcomeMessage()])
-const inputText = ref('')
-const sessionId = ref(localStorage.getItem(SESSION_STORAGE_KEY) || null)
-const sessions = ref([])
-
-const isRestoring = ref(Boolean(sessionId.value))
 const isSending = ref(false)
+const isUploading = ref(false)
+const isRestoring = ref(Boolean(sessionId.value))
 const isLoadingSessions = ref(false)
+
 const deletingSessionId = ref(null)
-const listError = ref('')
-const historyHasMore = ref(false)
+
+const showAgentManager = ref(false)
+const showMemoryManager = ref(false)
+
+const selectedAttachment = ref(null)
+
+const fileInput = ref(null)
 const messageList = ref(null)
 
-const currentSessionTitle = computed(() => {
-  const current = sessions.value.find(item => item.id === sessionId.value)
-  return current?.title || '新对话'
-})
+const errorText = ref('')
+const agentError = ref('')
+const historyHasMore = ref(false)
 
-// 旧数据没有 agent_id 时，视为默认 Agent 的会话。
-function sessionAgentId(session) {
-  return session?.agent_id || DEFAULT_AGENT_ID
-}
 
-const filteredSessions = computed(() =>
-  sessions.value.filter(session =>
-    sessionAgentId(session) === selectedAgentId.value
+// ==========================================
+// 3. 计算属性
+// ==========================================
+
+const currentAgent = computed(() =>
+  agents.value.find(
+    agent => agent.id === selectedAgentId.value
   )
 )
 
-watch(selectedAgentId, agentId => {
-  localStorage.setItem(AGENT_STORAGE_KEY, agentId)
+const currentAgentName = computed(() =>
+  currentAgent.value?.name || 'My Agent'
+)
+
+const currentAgentDescription = computed(() =>
+  currentAgent.value?.description
+  || '你的个人 AI 助手'
+)
+
+const currentSessionTitle = computed(() => {
+  const current = sessions.value.find(
+    item => item.id === sessionId.value
+  )
+
+  return current?.title || '新对话'
+})
+
+const filteredSessions = computed(() =>
+  sessions.value.filter(session =>
+    (session.agent_id || DEFAULT_AGENT_ID)
+      === selectedAgentId.value
+  )
+)
+
+const isBusy = computed(() =>
+  isSending.value ||
+  isUploading.value ||
+  isRestoring.value
+)
+
+const canSend = computed(() =>
+  !isBusy.value &&
+  (
+    Boolean(inputText.value.trim()) ||
+    selectedAttachment.value !== null
+  )
+)
+
+const selectedAttachmentIsImage = computed(() => {
+  if (!selectedAttachment.value) return false
+
+  return isImageFile(
+    selectedAttachment.value.filename
+  )
+})
+
+
+// ==========================================
+// 4. 持久化偏好
+// ==========================================
+
+watch(selectedAgentId, id => {
+  localStorage.setItem(AGENT_STORAGE_KEY, id)
 })
 
 watch(useLongTermMemory, enabled => {
-  localStorage.setItem(MEMORY_STORAGE_KEY, String(enabled))
+  localStorage.setItem(
+    MEMORY_STORAGE_KEY,
+    String(enabled)
+  )
 })
 
-async function scrollToBottom() {
-  await nextTick()
-  if (messageList.value) {
-    messageList.value.scrollTop = messageList.value.scrollHeight
+
+// ==========================================
+// 5. 工具函数
+// ==========================================
+
+function createWelcomeMessage() {
+  return {
+    id: 'welcome',
+    role: 'assistant',
+    content:
+      currentAgentName.value === 'My Agent'
+        ? '你好呀！我是鱼鱼，有什么可以帮你？'
+        : `你好！我是 ${currentAgentName.value}，有什么可以帮你？`
   }
 }
 
-// 保留原先经过 DOMPurify 清理的 Markdown 代码块复制功能。
-async function handleMessageListClick(event) {
-  const target = event.target
-  if (!(target instanceof Element)) return
+function getFileExtension(filename) {
+  return String(filename || '')
+    .split('.')
+    .pop()
+    .toLowerCase()
+}
 
-  const button = target.closest('.code-copy-button')
-  if (!button || !messageList.value?.contains(button)) return
+function isImageFile(filename) {
+  return IMAGE_EXTENSIONS.includes(
+    getFileExtension(filename)
+  )
+}
 
-  const wrapper = button.closest('.code-block-wrapper')
-  const codeElement = wrapper?.querySelector('pre code')
-  if (!codeElement) return
+function formatRequestError(error) {
+  const detail = error?.response?.data?.detail
 
-  const code = codeElement.textContent || ''
-  try {
-    if (!navigator.clipboard?.writeText) {
-      throw new Error('当前浏览器不支持剪贴板 API')
-    }
-    await navigator.clipboard.writeText(code)
-    button.textContent = '已复制'
-    button.classList.add('copied')
-    window.setTimeout(() => {
-      if (button.isConnected) {
-        button.textContent = '复制'
-        button.classList.remove('copied')
-      }
-    }, 1500)
-  } catch (error) {
-    console.error('复制代码失败：', error)
-    button.textContent = '复制失败'
-    window.setTimeout(() => {
-      if (button.isConnected) button.textContent = '复制'
-    }, 1500)
-  }
+  if (typeof detail === 'string') return detail
+
+  if (detail) return JSON.stringify(detail)
+
+  return error?.message || '未知错误'
 }
 
 function formatDate(value) {
   if (!value) return ''
-  const date = new Date(String(value).replace(' ', 'T'))
-  if (Number.isNaN(date.getTime())) return value
+
+  const date = new Date(
+    String(value).replace(' ', 'T')
+  )
+
+  if (Number.isNaN(date.getTime())) {
+    return String(value)
+  }
+
   return date.toLocaleString('zh-CN', {
     month: '2-digit',
     day: '2-digit',
@@ -135,194 +221,564 @@ function formatDate(value) {
   })
 }
 
-async function loadAgents() {
-  agentError.value = ''
-  try {
-    const response = await getAgents()
-    const payload = response.data
-    const list = Array.isArray(payload)
-      ? payload
-      : (payload?.agents || payload?.items || [])
-    if (!Array.isArray(list)) throw new Error('Agent 列表格式不正确')
+async function scrollToBottom() {
+  await nextTick()
 
-    agents.value = list
-    if (list.length && !list.some(agent => agent.id === selectedAgentId.value)) {
-      selectedAgentId.value = list.some(agent => agent.id === DEFAULT_AGENT_ID)
-        ? DEFAULT_AGENT_ID
-        : list[0].id
-    }
-
-    // 页面上的欢迎语应与当前 Agent 保持一致。
-    if (!sessionId.value && messages.value.length === 1 &&
-        messages.value[0].id === 'welcome') {
-      messages.value = [createWelcomeMessage()]
-    }
-  } catch (error) {
-    console.error('获取 Agent 列表失败：', error)
-    agentError.value = 'Agent 列表加载失败，请检查后端。'
+  if (messageList.value) {
+    messageList.value.scrollTop =
+      messageList.value.scrollHeight
   }
 }
 
+
+// ==========================================
+// 6. Agent 列表
+// ==========================================
+
+async function loadAgents() {
+  agentError.value = ''
+
+  try {
+    const response = await getAgents()
+    const payload = response.data
+
+    const list = Array.isArray(payload)
+      ? payload
+      : payload?.agents || payload?.items || []
+
+    if (!Array.isArray(list)) {
+      throw new Error('Agent 列表格式不正确')
+    }
+
+    agents.value = list
+
+    if (
+      list.length &&
+      !list.some(
+        agent => agent.id === selectedAgentId.value
+      )
+    ) {
+      selectedAgentId.value =
+        list.some(
+          agent => agent.id === DEFAULT_AGENT_ID
+        )
+          ? DEFAULT_AGENT_ID
+          : list[0].id
+    }
+
+    if (
+      !sessionId.value &&
+      messages.value.length <= 1
+    ) {
+      messages.value = [createWelcomeMessage()]
+    }
+
+  } catch (error) {
+    console.error('加载 Agent 失败：', error)
+
+    agentError.value = formatRequestError(error)
+  }
+}
+
+
+// ==========================================
+// 7. 历史会话列表
+// ==========================================
+
 async function loadSessions() {
   isLoadingSessions.value = true
-  listError.value = ''
+
   try {
     const response = await getSessions()
     const payload = response.data
+
     const list = Array.isArray(payload)
       ? payload
-      : (payload?.sessions || [])
-    if (!Array.isArray(list)) throw new Error('会话列表格式不正确')
+      : payload?.sessions || []
+
+    if (!Array.isArray(list)) {
+      throw new Error('会话列表格式不正确')
+    }
+
     sessions.value = list.map(item => ({
       ...item,
       id: item.id || item.session_id
     }))
+
   } catch (error) {
-    console.error('获取会话列表失败：', error)
-    listError.value = '历史会话加载失败，请检查后端服务。'
+    console.error('加载会话失败：', error)
+
+    errorText.value =
+      `加载会话失败：${formatRequestError(error)}`
+
   } finally {
     isLoadingSessions.value = false
   }
 }
 
+
+// ==========================================
+// 8. 新建聊天
+// ==========================================
+
+function createNewSession(force = false) {
+  if (!force && isBusy.value) return
+
+  sessionId.value = null
+
+  localStorage.removeItem(SESSION_STORAGE_KEY)
+
+  inputText.value = ''
+  errorText.value = ''
+  historyHasMore.value = false
+
+  clearAttachment()
+
+  messages.value = [createWelcomeMessage()]
+
+  scrollToBottom()
+}
+
+function handleAgentChange() {
+  // 切换 Agent 必须新建会话
+  createNewSession()
+}
+
+
+// ==========================================
+// 9. Agent 管理
+// ==========================================
+
+async function handleAgentSaved() {
+  await loadAgents()
+}
+
+function switchToManagedAgent(agentId) {
+  if (isBusy.value || !agentId) return
+
+  if (agentId !== selectedAgentId.value) {
+    selectedAgentId.value = agentId
+    createNewSession()
+  }
+
+  showAgentManager.value = false
+}
+
+
+// ==========================================
+// 10. 长期记忆管理
+// ==========================================
+
+function openMemoryManager() {
+  if (isBusy.value) return
+
+  showMemoryManager.value = true
+}
+
+function closeMemoryManager() {
+  showMemoryManager.value = false
+}
+
+
+// ==========================================
+// 11. 恢复历史会话
+// ==========================================
+
 async function restoreSession(id) {
-  if (!id || isSending.value) return
+  if (
+    !id ||
+    isSending.value ||
+    isUploading.value
+  ) {
+    return
+  }
+
   isRestoring.value = true
+  errorText.value = ''
+
   try {
     const response = await getSessionHistory(id)
     const data = response.data
+
     if (!Array.isArray(data.messages)) {
-      throw new Error('历史消息数据格式不正确')
+      throw new Error('历史消息格式不正确')
     }
 
-    const fromList = sessions.value.find(item => item.id === id)
-    const boundAgentId = data.agent_id || fromList?.agent_id
-    if (boundAgentId && boundAgentId !== selectedAgentId.value) {
+    const fromList = sessions.value.find(
+      item => item.id === id
+    )
+
+    const boundAgentId =
+      data.agent_id || fromList?.agent_id
+
+    if (
+      boundAgentId &&
+      boundAgentId !== selectedAgentId.value
+    ) {
       selectedAgentId.value = boundAgentId
     }
 
-    // 后端分页返回的是从新到旧，界面改为从旧到新。
     messages.value = [...data.messages]
-      .sort((a, b) => Number(a.id) - Number(b.id))
+      .sort(
+        (a, b) => Number(a.id) - Number(b.id)
+      )
       .map(message => ({
         id: message.id,
         role: message.role,
         content: message.content
       }))
 
-    historyHasMore.value = Boolean(data.has_more)
     if (messages.value.length === 0) {
       messages.value = [createWelcomeMessage()]
     }
 
+    historyHasMore.value = Boolean(data.has_more)
+
     sessionId.value = id
-    localStorage.setItem(SESSION_STORAGE_KEY, id)
+
+    localStorage.setItem(
+      SESSION_STORAGE_KEY,
+      id
+    )
+
+    inputText.value = ''
+    clearAttachment()
+
     await scrollToBottom()
+
   } catch (error) {
     console.error('恢复会话失败：', error)
-    if (error.response?.status === 404) {
-      if (sessionId.value === id) createNewSession(true)
+
+    errorText.value =
+      `恢复会话失败：${formatRequestError(error)}`
+
+    if (error?.response?.status === 404) {
+      createNewSession(true)
       await loadSessions()
-      window.alert('这个会话已经不存在了。')
-    } else {
-      window.alert('读取聊天记录失败，请检查后端服务。')
     }
+
   } finally {
     isRestoring.value = false
   }
 }
 
 async function switchSession(id) {
-  if (id === sessionId.value || isSending.value || isRestoring.value) return
+  if (
+    id === sessionId.value ||
+    isBusy.value
+  ) {
+    return
+  }
+
   await restoreSession(id)
 }
 
-// force 仅供恢复已删除的会话时清理本地状态使用。
-function createNewSession(force = false) {
-  if (!force && (isSending.value || isRestoring.value)) return
-  sessionId.value = null
-  localStorage.removeItem(SESSION_STORAGE_KEY)
-  historyHasMore.value = false
-  messages.value = [createWelcomeMessage()]
-  inputText.value = ''
-  scrollToBottom()
-}
 
-function handleAgentChange() {
-  // 选了另一个 Agent，必须新建聊天，不能复用之前绑定的 session_id。
-  createNewSession()
-}
+// ==========================================
+// 12. 删除会话
+// ==========================================
 
 async function removeSession(session) {
-  if (isSending.value || isRestoring.value || deletingSessionId.value) return
+  if (isBusy.value || deletingSessionId.value) {
+    return
+  }
+
   const confirmed = window.confirm(
-    `确定删除会话「${session.title || '新对话'}」吗？\n删除后无法恢复。`
+    `确定删除会话「${session.title || '新对话'}」吗？`
   )
+
   if (!confirmed) return
 
   deletingSessionId.value = session.id
+
   try {
     await deleteSession(session.id)
-    if (sessionId.value === session.id) createNewSession()
+
+    if (sessionId.value === session.id) {
+      createNewSession()
+    }
+
     await loadSessions()
+
   } catch (error) {
-    console.error('删除会话失败：', error)
-    window.alert(error.response?.data?.detail || '删除失败，请检查后端服务。')
+    errorText.value =
+      `删除失败：${formatRequestError(error)}`
+
   } finally {
     deletingSessionId.value = null
   }
 }
 
-function formatRequestError(error) {
-  const detail = error.response?.data?.detail
-  if (typeof detail === 'string') return detail
-  if (detail) return JSON.stringify(detail)
-  return error.message || '未知错误'
+
+// ==========================================
+// 13. 文档和图片附件
+// ==========================================
+
+function clearAttachment() {
+  selectedAttachment.value = null
+
+  if (fileInput.value) {
+    fileInput.value.value = ''
+  }
 }
 
+async function handleFileSelected(event) {
+  const file = event.target.files?.[0]
+
+  if (!file) return
+
+  if (isBusy.value) {
+    event.target.value = ''
+    return
+  }
+
+  const extension = getFileExtension(file.name)
+
+  if (!ALLOWED_EXTENSIONS.includes(extension)) {
+    errorText.value =
+      '仅支持 TXT、MD、PDF、DOCX、PNG、JPG、JPEG'
+
+    event.target.value = ''
+    return
+  }
+
+  if (file.size > MAX_FILE_BYTES) {
+    errorText.value = '文件大小不能超过 5 MB'
+    event.target.value = ''
+    return
+  }
+
+  if (file.size === 0) {
+    errorText.value = '不能上传空文件'
+    event.target.value = ''
+    return
+  }
+
+  const isImage =
+    IMAGE_EXTENSIONS.includes(extension)
+
+  errorText.value = ''
+  isUploading.value = true
+  selectedAttachment.value = null
+
+  try {
+    const response = isImage
+      ? await analyzeImage(file)
+      : await extractAttachment(file)
+
+    const data = response.data
+
+    if (
+      !data ||
+      typeof data.text !== 'string' ||
+      !data.text.trim()
+    ) {
+      throw new Error('附件没有返回有效内容')
+    }
+
+    selectedAttachment.value = {
+      ...data,
+      filename: data.filename || file.name
+    }
+
+    if (data.truncated) {
+      errorText.value = isImage
+        ? '图片分析结果较长，部分内容已截断。'
+        : '文档较长，仅提取前 16000 个字符。'
+    }
+
+  } catch (error) {
+    console.error('附件处理失败：', error)
+
+    errorText.value =
+      `附件处理失败：${formatRequestError(error)}`
+
+    selectedAttachment.value = null
+
+  } finally {
+    isUploading.value = false
+    event.target.value = ''
+  }
+}
+
+
+// ==========================================
+// 14. Markdown 代码块复制
+// ==========================================
+
+async function handleMessageListClick(event) {
+  const target = event.target
+
+  if (!(target instanceof Element)) return
+
+  const button = target.closest(
+    '.code-copy-button'
+  )
+
+  if (
+    !button ||
+    !messageList.value?.contains(button)
+  ) {
+    return
+  }
+
+  const wrapper = button.closest(
+    '.code-block-wrapper'
+  )
+
+  const code = wrapper?.querySelector(
+    'pre code'
+  )?.textContent
+
+  if (code == null) return
+
+  try {
+    await navigator.clipboard.writeText(code)
+
+    button.textContent = '已复制'
+
+    window.setTimeout(() => {
+      if (button.isConnected) {
+        button.textContent = '复制'
+      }
+    }, 1500)
+
+  } catch (error) {
+    console.error('复制代码失败：', error)
+
+    button.textContent = '复制失败'
+
+    window.setTimeout(() => {
+      if (button.isConnected) {
+        button.textContent = '复制'
+      }
+    }, 1500)
+  }
+}
+
+
+// ==========================================
+// 15. 发送聊天消息
+// ==========================================
+
 async function sendMessage() {
-  const content = inputText.value.trim()
-  if (!content || isSending.value || isRestoring.value) return
+  if (!canSend.value) return
+
+  const attachment = selectedAttachment.value
+
+  const question =
+    inputText.value.trim() ||
+    (
+      attachment
+        ? (
+            isImageFile(attachment.filename)
+              ? '请详细分析这张图片。'
+              : '请总结这份文档。'
+          )
+        : ''
+    )
+
+  if (!question) return
+
+  const attachmentPayload = attachment
+    ? {
+        filename: attachment.filename,
+        text: attachment.text
+      }
+    : null
+
+  const attachmentLabel = attachment
+    ? (
+        isImageFile(attachment.filename)
+          ? '🖼️ 图片'
+          : '📎 附件'
+      )
+    : ''
+
+  const displayText = attachment
+    ? (
+        `${question}\n\n` +
+        `${attachmentLabel}：${attachment.filename}` +
+        '（仅本轮可读取）'
+      )
+    : question
+
+  const tempId = `user-${Date.now()}`
 
   messages.value.push({
-    id: `user-${Date.now()}`,
+    id: tempId,
     role: 'user',
-    content
+    content: displayText
   })
+
   inputText.value = ''
+  errorText.value = ''
   isSending.value = true
+
   await scrollToBottom()
 
   try {
-    const response = await sendChat(content, sessionId.value, {
-      agentId: selectedAgentId.value,
-      useLongTermMemory: useLongTermMemory.value
-    })
+    const response = await sendChat(
+      question,
+      sessionId.value,
+      {
+        agentId: selectedAgentId.value,
+        useLongTermMemory:
+          useLongTermMemory.value,
+        attachment: attachmentPayload
+      }
+    )
+
     const data = response.data
+
     sessionId.value = data.session_id
-    localStorage.setItem(SESSION_STORAGE_KEY, data.session_id)
+
+    localStorage.setItem(
+      SESSION_STORAGE_KEY,
+      data.session_id
+    )
+
     messages.value.push({
       id: `assistant-${Date.now()}`,
       role: 'assistant',
       content: data.reply
     })
+
+    clearAttachment()
+
     await loadSessions()
+
   } catch (error) {
-    console.error('聊天请求失败：', error)
-    messages.value.push({
-      id: `error-${Date.now()}`,
-      role: 'assistant',
-      content: `请求失败：${formatRequestError(error)}`
-    })
+    console.error('发送消息失败：', error)
+
+    messages.value = messages.value.filter(
+      item => item.id !== tempId
+    )
+
+    inputText.value = question
+
+    errorText.value =
+      `发送失败：${formatRequestError(error)}`
+
   } finally {
     isSending.value = false
     await scrollToBottom()
   }
 }
 
+
+// ==========================================
+// 16. 页面初始化
+// ==========================================
+
 onMounted(async () => {
-  await Promise.all([loadAgents(), loadSessions()])
+  await Promise.all([
+    loadAgents(),
+    loadSessions()
+  ])
+
   const savedSessionId = sessionId.value
+
   if (savedSessionId) {
     await restoreSession(savedSessionId)
   } else {
@@ -332,41 +788,52 @@ onMounted(async () => {
 })
 </script>
 
+
 <template>
   <div class="app-shell">
 
-    <!-- 左侧历史会话栏 -->
+    <!-- 左侧导航 -->
     <aside class="sidebar">
 
       <div class="sidebar-brand">
         <div class="brand-icon">鱼</div>
 
         <div>
-          <div class="brand-name">FlowMind AI</div>
-          <div class="brand-subtitle">你的个人 AI 助手</div>
+          <div class="brand-name">
+            FlowMind AI
+          </div>
+
+          <div class="brand-subtitle">
+            你的个人 AI 助手
+          </div>
         </div>
       </div>
 
-
       <button
-        class="new-chat-button"
-        @click="createNewSession"
-        :disabled="isSending || isRestoring"
+        type="button"
+        class="sidebar-button"
+        :disabled="isBusy"
+        @click="createNewSession()"
       >
-        <span>＋</span>
-        新建对话
+        ＋ 新建对话
       </button>
 
 
+      <!-- Agent 切换 -->
       <div class="sidebar-agent-section">
-        <label class="sidebar-agent-label" for="agent-select">
+
+        <label
+          class="sidebar-agent-label"
+          for="agent-select"
+        >
           当前 Agent
         </label>
+
         <select
           id="agent-select"
           v-model="selectedAgentId"
           class="agent-select"
-          :disabled="isSending || isRestoring"
+          :disabled="isBusy"
           @change="handleAgentChange"
         >
           <option
@@ -376,6 +843,7 @@ onMounted(async () => {
           >
             {{ agent.name }}
           </option>
+
           <option
             v-if="agents.length === 0"
             :value="selectedAgentId"
@@ -383,29 +851,51 @@ onMounted(async () => {
             My Agent
           </option>
         </select>
-        <p v-if="agentError" class="agent-error">{{ agentError }}</p>
+
+        <p
+          v-if="agentError"
+          class="agent-error"
+        >
+          {{ agentError }}
+        </p>
+
+
+        <!-- Agent 管理 -->
+        <button
+          type="button"
+          class="sidebar-button manage-button"
+          :disabled="isBusy"
+          @click="showAgentManager = true"
+        >
+          ⚙ 管理 Agent
+        </button>
+
+
+        <!-- Day 3 新增：长期记忆管理 -->
+        <button
+          type="button"
+          class="sidebar-button manage-button memory-button"
+          :disabled="isBusy"
+          @click="openMemoryManager"
+        >
+          🧠 管理长期记忆
+        </button>
+
       </div>
 
 
+      <!-- 历史会话 -->
       <div class="sidebar-title">
         最近对话
       </div>
 
-
       <div class="history-list">
 
         <div
-          v-if="isLoadingSessions && sessions.length === 0"
+          v-if="isLoadingSessions && !sessions.length"
           class="empty-history"
         >
           正在加载会话...
-        </div>
-
-        <div
-          v-else-if="listError && sessions.length === 0"
-          class="empty-history"
-        >
-          {{ listError }}
         </div>
 
         <div
@@ -415,7 +905,6 @@ onMounted(async () => {
           暂无历史会话
           <p>开始聊天后会自动保存。</p>
         </div>
-
 
         <div
           v-for="session in filteredSessions"
@@ -429,7 +918,6 @@ onMounted(async () => {
           @click="switchSession(session.id)"
           @keydown.enter.prevent="switchSession(session.id)"
         >
-
           <div class="session-info">
 
             <div class="session-title">
@@ -444,25 +932,22 @@ onMounted(async () => {
 
           </div>
 
-
           <button
+            type="button"
             class="delete-button"
             title="删除会话"
-            aria-label="删除会话"
-            :disabled="
-              isSending ||
-              isRestoring ||
-              deletingSessionId === session.id
-            "
+            :disabled="isBusy || deletingSessionId !== null"
             @click.stop="removeSession(session)"
           >
-            {{ deletingSessionId === session.id ? '…' : '×' }}
+            {{
+              deletingSessionId === session.id
+                ? '…'
+                : '×'
+            }}
           </button>
-
         </div>
 
       </div>
-
 
       <div class="sidebar-footer">
         FlowMind AI · Personal Agent
@@ -471,7 +956,7 @@ onMounted(async () => {
     </aside>
 
 
-    <!-- 右侧聊天区域 -->
+    <!-- 右侧聊天工作台 -->
     <main class="main">
 
       <header class="topbar">
@@ -482,21 +967,35 @@ onMounted(async () => {
           </div>
 
           <div class="current-subtitle">
-            FlowMind AI · 真实 AI 对话
+            FlowMind AI · 多 Agent 工作台
           </div>
         </div>
 
         <div class="topbar-actions">
-          <label class="memory-switch" title="开启后会检索当前 Agent 的长期记忆">
-            <input type="checkbox" v-model="useLongTermMemory" />
+
+          <label
+            class="memory-switch"
+            title="启用当前 Agent 的长期记忆检索"
+          >
+            <input
+              v-model="useLongTermMemory"
+              type="checkbox"
+            />
+
             <span>长期记忆</span>
           </label>
+
           <div class="connection-status">
             <span class="status-dot"></span>
-            {{ isRestoring ? '恢复中' : '已连接' }}
-          </div>
-        </div>
 
+            {{
+              isRestoring
+                ? '恢复中'
+                : '已连接'
+            }}
+          </div>
+
+        </div>
       </header>
 
 
@@ -504,45 +1003,58 @@ onMounted(async () => {
 
         <div class="chat-header">
 
-          <div>
-            <div class="eyebrow">FLOWMIND AI</div>
-
-            <h1>和 {{ currentAgentName }} 聊天</h1>
-
-            <p>{{ currentAgentDescription }}</p>
+          <div class="eyebrow">
+            FLOWMIND AI
           </div>
+
+          <h1>
+            和 {{ currentAgentName }} 聊天
+          </h1>
+
+          <p>
+            {{ currentAgentDescription }}
+          </p>
 
         </div>
 
 
         <!-- 消息区域 -->
         <div
-          class="message-list"
           ref="messageList"
+          class="message-list"
           @click="handleMessageListClick"
         >
 
-          <p v-if="historyHasMore" class="history-notice">
-            当前显示最近 100 条消息，较早消息可在后续版本中继续加载。
+          <p
+            v-if="historyHasMore"
+            class="history-notice"
+          >
+            当前显示最近 100 条消息。
           </p>
 
           <div
             v-for="message in messages"
             :key="message.id"
-            :class="[
-              'message-row',
-              message.role
-            ]"
+            class="message-row"
+            :class="message.role"
           >
 
             <div class="avatar">
-              {{ message.role === 'assistant' ? currentAgentName.charAt(0) : '我' }}
+              {{
+                message.role === 'assistant'
+                  ? currentAgentName.charAt(0)
+                  : '我'
+              }}
             </div>
 
             <div class="message-body">
 
               <div class="message-author">
-                {{ message.role === 'assistant' ? currentAgentName : '我' }}
+                {{
+                  message.role === 'assistant'
+                    ? currentAgentName
+                    : '我'
+                }}
               </div>
 
               <div
@@ -551,20 +1063,19 @@ onMounted(async () => {
               ></div>
 
             </div>
-
           </div>
 
 
-          <!-- AI 思考提示 -->
+          <!-- 思考状态 -->
           <div
             v-if="isSending"
             class="message-row assistant"
           >
-
-            <div class="avatar">{{ currentAgentName.charAt(0) }}</div>
+            <div class="avatar">
+              {{ currentAgentName.charAt(0) }}
+            </div>
 
             <div class="message-body">
-
               <div class="message-author">
                 {{ currentAgentName }}
               </div>
@@ -572,56 +1083,144 @@ onMounted(async () => {
               <div class="message-bubble thinking">
                 {{ currentAgentName }} 正在思考...
               </div>
-
             </div>
-
           </div>
 
         </div>
 
 
-        <!-- 输入区域 -->
+        <!-- 错误提示 -->
+        <div
+          v-if="errorText"
+          class="error-banner"
+          role="alert"
+        >
+          <span>{{ errorText }}</span>
+
+          <button
+            type="button"
+            class="error-close"
+            @click="errorText = ''"
+          >
+            ×
+          </button>
+        </div>
+
+
+        <!-- 输入框 -->
         <form
           class="composer"
           @submit.prevent="sendMessage"
         >
 
-          <textarea
-            v-model="inputText"
-            rows="2"
-            :placeholder="`给 ${currentAgentName} 发送消息...`"
-            :disabled="isRestoring"
-            @keydown.enter.exact.prevent="sendMessage"
-          ></textarea>
+          <!-- 附件 -->
+          <div class="attachment-toolbar">
 
-          <button
-            class="send-button"
-            type="submit"
-            :disabled="
-              !inputText.trim() ||
-              isSending ||
-              isRestoring
-            "
-          >
-            发送
-            <span>➤</span>
-          </button>
+            <input
+              id="flowmind-attachment"
+              ref="fileInput"
+              type="file"
+              accept=".txt,.md,.pdf,.docx,.png,.jpg,.jpeg"
+              class="attachment-file-input"
+              :disabled="isBusy"
+              @change="handleFileSelected"
+            />
+
+            <label
+              for="flowmind-attachment"
+              class="attachment-button"
+              :class="{ disabled: isBusy }"
+            >
+              📎 上传文件 / 图片
+            </label>
+
+            <div
+              v-if="isUploading"
+              class="attachment-processing"
+            >
+              <span class="loading-spinner"></span>
+              正在解析附件或识别图片...
+            </div>
+
+            <div
+              v-else-if="selectedAttachment"
+              class="attachment-chip"
+            >
+              <span class="attachment-type">
+                {{
+                  selectedAttachmentIsImage
+                    ? '🖼️'
+                    : '📄'
+                }}
+              </span>
+
+              <div class="attachment-info">
+                <div class="attachment-name">
+                  {{ selectedAttachment.filename }}
+                </div>
+
+                <div class="attachment-meta">
+                  {{
+                    selectedAttachmentIsImage
+                      ? '图片分析完成'
+                      : '文本提取完成'
+                  }}
+                  ·
+                  {{ selectedAttachment.character_count }} 字
+                </div>
+              </div>
+
+              <button
+                type="button"
+                class="attachment-remove"
+                title="移除附件"
+                :disabled="isBusy"
+                @click="clearAttachment"
+              >
+                ×
+              </button>
+
+            </div>
+
+          </div>
+
+
+          <!-- 发送文字 -->
+          <div class="composer-main">
+
+            <textarea
+              v-model="inputText"
+              rows="2"
+              maxlength="2000"
+              :placeholder="`给 ${currentAgentName} 发送消息...`"
+              :disabled="isBusy"
+              @keydown.enter.exact.prevent="sendMessage"
+            ></textarea>
+
+            <button
+              type="submit"
+              class="send-button"
+              :disabled="!canSend"
+            >
+              {{ isSending ? '发送中' : '发送' }}
+              <span>➤</span>
+            </button>
+
+          </div>
 
         </form>
 
-
         <div class="composer-hint">
           {{
-            isRestoring
-              ? '正在恢复历史对话...'
+            isUploading
+              ? '正在处理附件...'
               : isSending
                 ? `${currentAgentName} 正在思考...`
-                : 'FlowMind AI · 真实 AI 对话'
+                : '支持 PDF、Word、TXT、Markdown、PNG、JPG · 最大 5 MB'
           }}
         </div>
 
       </section>
-
 
       <p class="footer">
         FlowMind AI · Made with Vue 3
@@ -629,56 +1228,74 @@ onMounted(async () => {
 
     </main>
 
+
+    <!-- Agent 管理弹窗 -->
+    <AgentManager
+      v-if="showAgentManager"
+      :agents="agents"
+      :selected-agent-id="selectedAgentId"
+      @close="showAgentManager = false"
+      @saved="handleAgentSaved"
+      @switch-agent="switchToManagedAgent"
+    />
+
+
+    <!-- Day 3：长期记忆管理弹窗 -->
+    <MemoryManager
+      v-if="showMemoryManager"
+      :agent-id="selectedAgentId"
+      :agent-name="currentAgentName"
+      :session-id="sessionId"
+      @close="closeMemoryManager"
+    />
+
   </div>
 </template>
 
 
-
-
 <style scoped>
-
 * {
   box-sizing: border-box;
 }
 
 .app-shell {
-  width: 100%;
-  min-height: 100vh;
   display: grid;
   grid-template-columns: 270px minmax(0, 1fr);
+  width: 100%;
+  min-height: 100vh;
   background: #f5f7fb;
-  color: #1f2937;
+  color: #263246;
   font-family: Inter, "Microsoft YaHei", sans-serif;
 }
 
-
-/* =========================
-   左侧导航栏
-========================= */
+/* ==========================================
+   侧边栏
+========================================== */
 
 .sidebar {
-  height: 100vh;
   position: sticky;
   top: 0;
   display: flex;
   flex-direction: column;
+  height: 100vh;
   padding: 22px 16px;
-  background: #ffffff;
-  border-right: 1px solid #e7ebf2;
+  background: #fff;
+  border-right: 1px solid #e5eaf2;
 }
 
 .sidebar-brand {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 0 5px 25px;
+  padding: 0 5px 24px;
 }
 
 .brand-icon {
-  width: 43px;
-  height: 43px;
   display: grid;
   place-items: center;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
   border-radius: 13px;
   background: #e9efff;
   color: #4669cb;
@@ -693,36 +1310,66 @@ onMounted(async () => {
 
 .brand-subtitle {
   margin-top: 4px;
-  color: #9aa3b2;
+  color: #98a2b3;
   font-size: 12px;
 }
 
-.new-chat-button {
+.sidebar-button {
+  display: block;
   width: 100%;
-  height: 43px;
+  padding: 12px 14px;
   border: 1px solid #dce5fa;
   border-radius: 10px;
   background: #f3f6ff;
   color: #4969c4;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
-  cursor: pointer;
   text-align: left;
-  padding: 0 14px;
+  cursor: pointer;
 }
 
-.new-chat-button span {
-  margin-right: 8px;
-  font-size: 19px;
+.sidebar-button:hover:not(:disabled) {
+  background: #e8eeff;
 }
 
-.new-chat-button:hover:not(:disabled) {
-  background: #e9efff;
-}
-
-.new-chat-button:disabled {
-  opacity: 0.5;
+.sidebar-button:disabled {
+  opacity: .5;
   cursor: not-allowed;
+}
+
+.sidebar-agent-section {
+  margin-top: 22px;
+}
+
+.sidebar-agent-label {
+  display: block;
+  margin-bottom: 9px;
+  color: #8995a8;
+  font-size: 12px;
+}
+
+.agent-select {
+  width: 100%;
+  padding: 10px 11px;
+  border: 1px solid #dce3ee;
+  border-radius: 9px;
+  background: #fff;
+  color: #344054;
+  font-size: 13px;
+}
+
+.agent-error {
+  margin-top: 8px;
+  color: #d74646;
+  font-size: 12px;
+}
+
+.manage-button {
+  margin-top: 10px;
+}
+
+.memory-button {
+  background: #f5f7ff;
 }
 
 .sidebar-title {
@@ -733,32 +1380,28 @@ onMounted(async () => {
 }
 
 .history-list {
-  flex: 1;
-  overflow-y: auto;
   display: flex;
+  flex: 1;
   flex-direction: column;
   gap: 5px;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .empty-history {
-  padding: 20px 10px;
-  color: #a0a9b8;
+  padding: 15px 10px;
+  color: #98a2b3;
   font-size: 13px;
-  line-height: 1.8;
-}
-
-.empty-history p {
-  margin: 5px 0;
+  line-height: 1.7;
 }
 
 .session-item {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   padding: 11px 9px;
   border-radius: 9px;
   cursor: pointer;
-  transition: background 0.15s;
 }
 
 .session-item:hover {
@@ -776,11 +1419,11 @@ onMounted(async () => {
 
 .session-title {
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  color: #344054;
   font-size: 13px;
   font-weight: 600;
-  color: #344054;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .session-meta {
@@ -790,29 +1433,11 @@ onMounted(async () => {
 }
 
 .delete-button {
-  width: 27px;
-  height: 27px;
-  flex-shrink: 0;
   border: none;
-  border-radius: 7px;
   background: transparent;
   color: #a0a9b8;
   font-size: 19px;
   cursor: pointer;
-  opacity: 0;
-}
-
-.session-item:hover .delete-button {
-  opacity: 1;
-}
-
-.delete-button:hover:not(:disabled) {
-  background: #fff0f0;
-  color: #e45c5c;
-}
-
-.delete-button:disabled {
-  cursor: not-allowed;
 }
 
 .sidebar-footer {
@@ -822,25 +1447,25 @@ onMounted(async () => {
   font-size: 11px;
 }
 
-
-/* =========================
-   右侧主体
-========================= */
+/* ==========================================
+   主区域
+========================================== */
 
 .main {
-  min-width: 0;
-  min-height: 100vh;
   display: flex;
   flex-direction: column;
-  padding: 0 30px 20px;
+  min-width: 0;
+  height: 100vh;
+  padding: 0 28px 15px;
 }
 
 .topbar {
-  min-height: 76px;
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  border-bottom: 1px solid #e7ebf2;
+  justify-content: space-between;
+  min-height: 76px;
+  flex-shrink: 0;
+  border-bottom: 1px solid #e5eaf2;
 }
 
 .current-title {
@@ -850,16 +1475,27 @@ onMounted(async () => {
 
 .current-subtitle {
   margin-top: 5px;
-  color: #9aa3b2;
+  color: #98a2b3;
   font-size: 11px;
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.memory-switch,
 .connection-status {
   display: flex;
   align-items: center;
   gap: 7px;
   color: #718096;
   font-size: 12px;
+}
+
+.memory-switch input {
+  accent-color: #526fcb;
 }
 
 .status-dot {
@@ -869,23 +1505,27 @@ onMounted(async () => {
   background: #35b77a;
 }
 
+/* ==========================================
+   聊天卡片
+========================================== */
+
 .chat-card {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
   width: 100%;
   max-width: 1000px;
-  flex: 1;
-  min-height: 500px;
-  margin: 28px auto 0;
-  display: flex;
-  flex-direction: column;
+  min-height: 0;
+  margin: 20px auto 0;
   overflow: hidden;
   border: 1px solid #e5eaf2;
-  border-radius: 19px;
-  background: #ffffff;
-  box-shadow: 0 8px 30px rgba(35, 55, 90, 0.04);
+  border-radius: 17px;
+  background: #fff;
+  box-shadow: 0 8px 30px rgba(35, 55, 90, .04);
 }
 
 .chat-header {
-  padding: 23px 28px;
+  padding: 22px 26px;
   border-bottom: 1px solid #edf0f5;
 }
 
@@ -907,21 +1547,19 @@ onMounted(async () => {
   font-size: 13px;
 }
 
-
-/* =========================
-   聊天消息
-========================= */
+/* ==========================================
+   消息区域
+========================================== */
 
 .message-list {
-  flex: 1;
-  min-height: 300px;
-  max-height: calc(100vh - 340px);
-  overflow-y: auto;
-  padding: 25px;
-  background: #fafbfe;
   display: flex;
+  flex: 1;
   flex-direction: column;
-  gap: 21px;
+  gap: 20px;
+  min-height: 0;
+  padding: 24px;
+  overflow-y: auto;
+  background: #fafbfe;
 }
 
 .message-row {
@@ -935,11 +1573,11 @@ onMounted(async () => {
 }
 
 .avatar {
+  display: grid;
+  place-items: center;
   width: 34px;
   height: 34px;
   flex-shrink: 0;
-  display: grid;
-  place-items: center;
   border-radius: 11px;
   background: #e9efff;
   color: #4669cb;
@@ -954,11 +1592,11 @@ onMounted(async () => {
 }
 
 .message-body {
-  max-width: 78%;
-  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
+  max-width: 78%;
 }
 
 .message-row.user .message-body {
@@ -975,18 +1613,17 @@ onMounted(async () => {
   padding: 12px 15px;
   border: 1px solid #e8edf4;
   border-radius: 4px 14px 14px 14px;
-  background: #ffffff;
+  background: #fff;
   color: #344054;
   font-size: 14px;
   line-height: 1.8;
-  white-space: normal;
   overflow-wrap: anywhere;
 }
 
 .message-row.user .message-bubble {
+  border-color: #dce6ff;
   border-radius: 14px 4px 14px 14px;
   background: #eaf0ff;
-  border-color: #dce6ff;
 }
 
 .thinking {
@@ -995,444 +1632,300 @@ onMounted(async () => {
 }
 
 @keyframes pulse {
-  0%, 100% {
-    opacity: 1;
-  }
-
-  50% {
-    opacity: 0.45;
-  }
+  0%, 100% { opacity: 1; }
+  50% { opacity: .45; }
 }
 
-
-/* =========================
-   Markdown 样式
-========================= */
-
-/* 段落 */
-.message-bubble :deep(p) {
-  margin: 0 0 12px;
-  line-height: 1.8;
+.history-notice {
+  color: #718096;
+  font-size: 12px;
+  text-align: center;
 }
 
-.message-bubble :deep(p:last-child) {
-  margin-bottom: 0;
-}
+/* ==========================================
+   错误提示
+========================================== */
 
-/* 标题 */
-.message-bubble :deep(h1),
-.message-bubble :deep(h2),
-.message-bubble :deep(h3),
-.message-bubble :deep(h4) {
-  margin: 18px 0 10px;
-  font-weight: 700;
-  line-height: 1.5;
-}
-
-.message-bubble :deep(h1) {
-  font-size: 22px;
-}
-
-.message-bubble :deep(h2) {
-  font-size: 19px;
-}
-
-.message-bubble :deep(h3) {
-  font-size: 16px;
-}
-
-/* 粗体 */
-.message-bubble :deep(strong) {
-  font-weight: 700;
-  color: #263b68;
-}
-
-.message-bubble :deep(em) {
-  font-style: italic;
-}
-
-/* 列表 */
-.message-bubble :deep(ul),
-.message-bubble :deep(ol) {
-  padding-left: 25px;
-  margin: 10px 0;
-}
-
-.message-bubble :deep(li) {
-  margin: 5px 0;
-  line-height: 1.8;
-}
-
-/* 链接 */
-.message-bubble :deep(a) {
-  color: #5274cf;
-  text-decoration: underline;
-  overflow-wrap: anywhere;
-}
-
-.message-bubble :deep(a:hover) {
-  color: #304fae;
-}
-
-/* 引用 */
-.message-bubble :deep(blockquote) {
-  margin: 12px 0;
-  padding: 8px 14px;
-  border-left: 3px solid #7995df;
-  background: #f3f6fc;
-  color: #68758b;
-  border-radius: 0 7px 7px 0;
-}
-
-/* 分割线 */
-.message-bubble :deep(hr) {
-  border: none;
-  border-top: 1px solid #e5eaf2;
-  margin: 16px 0;
-}
-
-/* 行内代码 */
-.message-bubble :deep(p code),
-.message-bubble :deep(li code),
-.message-bubble :deep(td code) {
-  padding: 2px 6px;
-  border-radius: 5px;
-  background: #edf1f8;
-  color: #b04462;
-  font-family: Consolas, monospace;
-  font-size: 0.9em;
-}
-
-/* 表格 */
-.message-bubble :deep(table) {
-  display: block;
-  width: 100%;
-  overflow-x: auto;
-  border-collapse: collapse;
-  margin: 14px 0;
-  font-size: 13px;
-}
-
-.message-bubble :deep(th),
-.message-bubble :deep(td) {
-  padding: 9px 12px;
-  border: 1px solid #e1e7f0;
-  text-align: left;
-  white-space: nowrap;
-}
-
-.message-bubble :deep(th) {
-  background: #f1f4fa;
-  font-weight: 700;
-}
-
-.message-bubble :deep(tr:nth-child(even)) {
-  background: #f9faff;
-}
-
-/* 图片 */
-.message-bubble :deep(img) {
-  max-width: 100%;
-  height: auto;
-  border-radius: 8px;
-}
-
-
-/* =========================
-   代码块和复制按钮
-========================= */
-
-.message-bubble :deep(.code-block-wrapper) {
-  width: 100%;
-  margin: 14px 0;
-  overflow: hidden;
-  border-radius: 10px;
-  background: #18212f;
-}
-
-/* 代码块顶部工具栏 */
-.message-bubble :deep(.code-block-toolbar) {
-  height: 40px;
-  padding: 0 13px;
+.error-banner {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: #111a27;
-  color: #cbd5e1;
+  gap: 10px;
+  margin: 10px 20px 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #fff0f0;
+  color: #c54444;
+  font-size: 12px;
 }
 
-/* 语言名称 */
-.message-bubble :deep(.code-language) {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 1px;
-}
-
-/* 复制按钮 */
-.message-bubble :deep(.code-copy-button) {
-  padding: 5px 11px;
-  border: 1px solid #465367;
-  border-radius: 6px;
+.error-close {
+  border: none;
   background: transparent;
-  color: #dce6f5;
-  font-size: 11px;
+  color: #c54444;
+  font-size: 18px;
   cursor: pointer;
-  transition: all 0.2s;
 }
 
-.message-bubble :deep(.code-copy-button:hover) {
-  background: #344256;
-  border-color: #7c93b5;
-}
-
-.message-bubble :deep(.code-copy-button.copied) {
-  color: #68d391;
-  border-color: #68d391;
-}
-
-/* 代码区域 */
-.message-bubble :deep(pre.hljs) {
-  margin: 0;
-  padding: 16px;
-  border-radius: 0 0 10px 10px;
-  overflow-x: auto;
-  background: #18212f;
-  font-size: 13px;
-  line-height: 1.7;
-  max-width: 100%;
-}
-
-.message-bubble :deep(pre.hljs code) {
-  font-family: Consolas, "Courier New", monospace;
-  white-space: pre;
-}
-
-
-/* =========================
-   输入区域
-========================= */
+/* ==========================================
+   输入框
+========================================== */
 
 .composer {
   display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 15px 20px;
+  border-top: 1px solid #edf0f5;
+}
+
+.composer-main {
+  display: flex;
   align-items: flex-end;
   gap: 12px;
-  padding: 18px 20px 8px;
 }
 
 .composer textarea {
   flex: 1;
   min-width: 0;
-  min-height: 54px;
-  max-height: 150px;
+  min-height: 62px;
+  padding: 12px;
   resize: vertical;
-  border: 1px solid #e1e7f0;
-  border-radius: 12px;
-  padding: 14px;
+  border: 1px solid #e0e6f0;
+  border-radius: 10px;
   outline: none;
-  font: inherit;
+  color: #344054;
   font-size: 14px;
+  font-family: inherit;
 }
 
 .composer textarea:focus {
-  border-color: #8ba3e8;
-}
-
-.composer textarea:disabled {
-  background: #f5f7fb;
-  cursor: not-allowed;
+  border-color: #8199dd;
 }
 
 .send-button {
-  height: 48px;
-  padding: 0 20px;
+  flex-shrink: 0;
+  padding: 13px 18px;
   border: none;
-  border-radius: 11px;
+  border-radius: 10px;
   background: #526fcb;
-  color: #ffffff;
-  font-weight: 600;
+  color: #fff;
+  font-size: 13px;
   cursor: pointer;
-}
-
-.send-button:hover:not(:disabled) {
-  background: #405ebc;
 }
 
 .send-button:disabled {
-  background: #b7c2dc;
+  opacity: .5;
   cursor: not-allowed;
 }
 
-.send-button span {
-  margin-left: 5px;
-}
-
-.composer-hint {
-  padding: 5px 20px 16px;
-  color: #a0a9b8;
-  font-size: 11px;
-}
-
+.composer-hint,
 .footer {
-  text-align: center;
-  color: #a0a9b8;
+  margin: 0;
+  padding: 10px;
+  color: #98a2b3;
   font-size: 11px;
-  margin: 17px 0 0;
+  text-align: center;
 }
 
+/* ==========================================
+   附件
+========================================== */
 
-/* =========================
-   响应式布局
-========================= */
-
-@media (max-width: 760px) {
-
-  .app-shell {
-    grid-template-columns: 210px minmax(0, 1fr);
-  }
-
-  .sidebar {
-    padding: 16px 10px;
-  }
-
-  .main {
-    padding: 0 12px 15px;
-  }
-
-  .chat-header {
-    padding: 18px;
-  }
-
-  .message-list {
-    padding: 17px;
-  }
-
+.attachment-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  width: 100%;
 }
 
-@media (max-width: 560px) {
-
-  .app-shell {
-    grid-template-columns: 1fr;
-  }
-
-  .sidebar {
-    height: auto;
-    position: static;
-    border-right: none;
-    border-bottom: 1px solid #e7ebf2;
-  }
-
-  .sidebar-brand {
-    padding-bottom: 12px;
-  }
-
-  .sidebar-title,
-  .sidebar-footer {
-    display: none;
-  }
-
-  .history-list {
-    max-height: 150px;
-    margin-top: 12px;
-  }
-
-  .main {
-    min-height: 70vh;
-  }
-
+.attachment-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
 }
 
-
-
-/* =========================
-   Phase 4 Day 1：Agent 与长期记忆
-========================= */
-
-.sidebar-agent-section {
-  margin-top: 18px;
-  padding: 0 2px;
+.attachment-button {
+  padding: 8px 12px;
+  border: 1px solid #dbe4f5;
+  border-radius: 9px;
+  background: #f3f6ff;
+  color: #4969c4;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
 }
 
-.sidebar-agent-label {
-  display: block;
-  margin: 0 6px 9px;
-  color: #929cac;
+.attachment-button:hover {
+  background: #e9efff;
+}
+
+.attachment-button.disabled {
+  opacity: .5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.attachment-processing {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: #718096;
+  font-size: 12px;
+}
+
+.loading-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid #d7e0f3;
+  border-top-color: #526fcb;
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.attachment-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #dce6ff;
+  border-radius: 9px;
+  background: #eef3ff;
+}
+
+.attachment-type {
+  font-size: 20px;
+}
+
+.attachment-info {
+  min-width: 0;
+}
+
+.attachment-name {
+  overflow: hidden;
+  color: #455d98;
   font-size: 12px;
   font-weight: 600;
-}
-
-.agent-select {
-  width: 100%;
-  min-height: 41px;
-  padding: 9px 10px;
-  border: 1px solid #dce5fa;
-  border-radius: 9px;
-  background: #fff;
-  color: #344054;
-  font-size: 13px;
-  outline: none;
-  cursor: pointer;
-}
-
-.agent-select:focus-visible {
-  border-color: #6685db;
-  box-shadow: 0 0 0 3px rgba(82, 111, 203, 0.12);
-}
-
-.agent-select:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.agent-error {
-  margin: 8px 5px 0;
-  color: #c45252;
-  font-size: 11px;
-  line-height: 1.5;
-}
-
-.topbar-actions {
-  display: flex;
-  align-items: center;
-  gap: 24px;
-}
-
-.memory-switch {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  color: #67758c;
-  font-size: 12px;
-  cursor: pointer;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.memory-switch input {
-  accent-color: #526fcb;
-  width: 15px;
-  height: 15px;
+.attachment-meta {
+  margin-top: 4px;
+  color: #8595b4;
+  font-size: 11px;
 }
 
-.history-notice {
-  margin: 0;
-  padding: 9px 11px;
-  border-radius: 8px;
-  background: #eef3ff;
-  color: #6a7b9a;
-  font-size: 12px;
+.attachment-remove {
+  border: none;
+  background: transparent;
+  color: #dc5555;
+  font-size: 20px;
+  cursor: pointer;
 }
 
-@media (max-width: 560px) {
-  .sidebar-agent-section {
-    margin-top: 12px;
+/* ==========================================
+   Markdown、代码和数学公式
+========================================== */
+
+.message-bubble :deep(pre) {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.message-bubble :deep(.code-block-wrapper) {
+  max-width: 100%;
+  overflow: hidden;
+  border-radius: 9px;
+  background: #0d1117;
+}
+
+.message-bubble :deep(.code-block-toolbar) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 12px;
+  color: #c9d1d9;
+}
+
+.message-bubble :deep(.code-copy-button) {
+  padding: 4px 10px;
+  border: 1px solid #444c56;
+  border-radius: 6px;
+  background: #21262d;
+  color: #e6edf3;
+  cursor: pointer;
+}
+
+.message-bubble :deep(.katex-display) {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.message-bubble :deep(img) {
+  max-width: 100%;
+}
+
+/* ==========================================
+   响应式
+========================================== */
+
+@media (max-width: 900px) {
+  .app-shell {
+    grid-template-columns: 220px minmax(0, 1fr);
+  }
+
+  .main {
+    padding: 0 12px 12px;
+  }
+}
+
+@media (max-width: 650px) {
+  .app-shell {
+    grid-template-columns: 165px minmax(0, 1fr);
+  }
+
+  .sidebar {
+    padding: 15px 8px;
+  }
+
+  .main {
+    padding: 0 8px 8px;
   }
 
   .topbar-actions {
-    gap: 10px;
+    gap: 8px;
   }
 
-  .connection-status {
-    font-size: 11px;
+  .chat-header {
+    padding: 16px;
+  }
+
+  .message-list {
+    padding: 12px;
+  }
+
+  .message-body {
+    max-width: 92%;
+  }
+
+  .composer {
+    padding: 10px;
+  }
+
+  .composer-main {
+    gap: 6px;
+  }
+
+  .send-button {
+    padding: 12px;
   }
 }
-
 </style>

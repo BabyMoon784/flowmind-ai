@@ -1,180 +1,186 @@
+# FlowMind AI
 
-# 🌙 FlowMind AI
+**基于 FastAPI、Vue 3、DeepSeek 和 SQLite 的个人 AI Agent 管理平台**
 
-> 一个基于 Python 与大语言模型的智能任务管理 Agent，正在逐步发展为具备长期记忆、工具调用和自动化工作流能力的 AI 应用平台。
+FlowMind AI 是一个面向个人效率和 AI 应用探索的全栈智能体项目。项目从 Python 命令行工具逐步演进为 Web 应用，支持自定义 Agent、工具调用、持久化聊天记录、Agent 独立长期记忆，以及文档和图片理解。
 
-## 📖 项目简介
+项目重点是探索如何将大语言模型能力与实际软件系统结合，而不仅仅实现一个基础聊天界面。
 
-FlowMind AI 是一个个人独立开发的 AI Agent 项目。
+## 1. 核心功能
 
-项目基于 DeepSeek 大模型 API，通过 Function Calling 实现模型与本地任务管理工具的交互，并通过 JSON 文件持久化聊天历史与结构化长期记忆。
+### 多 Agent 管理
 
-目前项目处于 CLI（命令行）MVP 阶段，后续计划引入 FastAPI、Vue 3 和 LangGraph，逐步构建完整的 Web AI Agent 平台。
+- 创建和管理不同用途的 AI Agent
+- 为 Agent 配置独立的人格和行为规则
+- 每段聊天会话绑定指定 Agent
+- 在不同 Agent 之间切换工作场景
 
-## ✨ 已实现功能
+### AI 对话与工具调用
 
-### 1. 任务管理
-- 创建任务
-- 查看任务列表
-- 标记任务为已完成
-- 使用 JSON 持久化任务数据
-- 自动管理任务 ID
+- 基于 DeepSeek API 实现多轮 AI 对话
+- 支持工具调用，将大语言模型与任务管理功能结合
+- 支持 Markdown、代码高亮与数学公式渲染
+- 支持聊天记录持久化、恢复与删除
 
-### 2. AI 智能对话
-- 接入 DeepSeek 大模型 API
-- 支持多轮对话
-- 支持查看与清空聊天历史
-- 支持上下文窗口限制
-- 具备基本的 API 异常处理
+### 独立长期记忆
 
-### 3. Function Calling
-- 支持模型自主选择任务统计工具
-- 查询任务总数、已完成数量和未完成数量
-- 支持工具执行结果回传模型
-- 设置工具调用轮数上限
+- 基于 SQLite 存储长期记忆
+- 不同 Agent 使用独立的记忆空间
+- 根据用户问题检索相关记忆并注入对话上下文
+- 支持记忆的新增、查看、修改、删除
+- 支持从聊天记录或指定文字中提取候选记忆
+- AI 提取结果需要用户审核确认后才能保存
 
-### 4. 记忆系统
-- Memory v1：聊天历史持久化
-- Memory v2：结构化长期记忆
-- 支持新增、更新、查询和删除记忆
-- 支持跨会话恢复历史
-- 区分聊天历史与长期记忆
-- 用户可以主动控制长期记忆内容
+### 文档与图片理解
 
-## 🛠 技术栈
+- 支持 TXT、Markdown、PDF、DOCX 文档文本提取
+- 支持 PNG、JPG、JPEG 图片分析
+- 使用视觉模型提取图片中的关键信息
+- 将文档文本或图片分析结果提供给当前 Agent 进行问答
+- 限制上传文件大小并验证文件格式
 
-| 分类 | 技术 |
-|------|------|
-| 编程语言 | Python |
-| 大语言模型 | DeepSeek API |
-| 模型调用 | OpenAI Python SDK |
-| Agent 基础 | Function Calling |
-| 数据持久化 | JSON |
-| 配置管理 | python-dotenv |
-| 版本管理 | Git |
-| 开发工具 | Visual Studio Code |
+当前附件功能采用单轮上下文方案，附件原始内容不会自动持久化到聊天历史。
 
-## 📂 项目结构
+## 2. 技术栈
+
+| 层次 | 技术 |
+|---|---|
+| 前端 | Vue 3、Vite、JavaScript |
+| 后端 | Python、FastAPI、Pydantic |
+| AI 模型 | DeepSeek API |
+| 数据存储 | SQLite |
+| 文本渲染 | Markdown、KaTeX |
+| 文件处理 | PDF、DOCX 文本解析、Pillow |
+| 测试 | Pytest |
+| 版本管理 | Git、GitHub |
+
+## 3. 系统架构
 
 ```text
-flowmind-ai/
-├── main.py                 # 程序入口、CLI 与任务管理
-├── ai_service.py           # 大模型调用与工具调用
-├── memory.py               # 聊天历史持久化
-├── long_term_memory.py     # 结构化长期记忆
-├── requirements.txt        # Python 依赖
-├── .gitignore              # Git 忽略规则
-└── README.md               # 项目说明
+                 FlowMind AI
+                      |
+               Vue 3 Web UI
+                      |
+              Axios HTTP API
+                      |
+                 FastAPI
+                      |
+       +--------------+--------------+
+       |              |              |
+  Agent 管理       聊天服务       附件服务
+       |              |              |
+       |         DeepSeek API    文档文本提取
+       |              |          图片视觉分析
+       |          工具调用           |
+       |              |              |
+       +--------------+--------------+
+                      |
+              SQLite 数据存储
+                      |
+          +-----------+-----------+
+          |                       |
+       会话历史               Agent 长期记忆
 ```
 
-以下文件由本地环境生成，不应提交到 GitHub：
+## 4. 项目运行
 
-- `.env`：API Key
-- `.venv/`：虚拟环境
-- `tasks.json`：任务数据
-- `chat_history.json`：聊天记录
-- `long_term_memory.json`：长期记忆数据
+### 环境准备
 
-## 🚀 本地运行
+需要安装 Python、Node.js、npm 和 Git。
 
-### 1. 克隆项目
+### 启动后端
 
-```bash
-git clone <你的GitHub仓库地址>
-cd flowmind-ai
-```
-
-### 2. 创建虚拟环境
+在项目根目录创建 Python 虚拟环境并安装依赖：
 
 ```powershell
-py -m venv .venv
-```
+python -m venv .venv
 
-### 3. 安装依赖
-
-```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-### 4. 配置 API Key
+在项目根目录配置 `.env`，设置 DeepSeek API Key：
 
-在项目根目录创建 `.env` 文件：
+```env
+DEEPSEEK_API_KEY=填写你的API Key```
 
-```dotenv
-DEEPSEEK_API_KEY=your_api_key_here
-```
-
-请使用自己的 DeepSeek API Key，勿将真实密钥上传到 GitHub。
-
-### 5. 启动程序
+启动 FastAPI：
 
 ```powershell
-.\.venv\Scripts\python.exe main.py
+.\.venv\Scripts\python.exe -m uvicorn api:app --reload
 ```
 
-启动后可通过命令行菜单管理任务或进入 AI 对话。
+API 文档默认地址：
 
-## 🧠 长期记忆命令
+`http://127.0.0.1:8000/docs`
 
-| 命令 | 功能 |
-|------|------|
-| `/remember key value` | 保存或更新记忆 |
-| `/memories` | 查看长期记忆 |
-| `/forget key` | 删除一条记忆 |
-| `/clear-memory` | 清空全部长期记忆 |
-| `history` | 查看聊天历史 |
-| `clear` | 清空聊天历史 |
-| `exit` | 退出 AI 对话 |
+### 启动前端
 
-示例：
+另开一个终端：
+
+```powershell
+cd frontend
+
+npm install
+
+npm run dev
+```
+
+前端默认地址：
+
+`http://localhost:5173`
+
+## 5. 测试
+
+运行全部后端自动化测试：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+```
+
+当前开发阶段的测试结果：
 
 ```text
-/remember assistant_name 鱼鱼
-/remember user_name BabyMoon
-/remember project_name FlowMind AI
+167 passed in 4.14s
 ```
 
-长期记忆与聊天历史独立保存。清空聊天历史不影响长期记忆。
+前端生产构建：
 
-## 🗺 开发路线
+```powershell
+cd frontend
 
-- [x] Week 1：Python 项目初始化
-- [x] CLI 任务管理
-- [x] JSON 数据持久化
-- [x] DeepSeek API 集成
-- [x] 多轮对话
-- [x] Function Calling 工具调用
-- [x] Memory v1：聊天历史
-- [x] Memory v2：结构化长期记忆
-- [ ] 工程化测试与代码重构
-- [ ] FastAPI 后端服务
-- [ ] SQLite / PostgreSQL 数据库
-- [ ] Vue 3 Web 前端
-- [ ] LangGraph 工作流
-- [ ] 智能表情包检索工具
-- [ ] Docker 部署
-- [ ] Agent 效果评测
+npm run build
+```
 
-## 🔐 安全说明
+当前版本已通过 Vite 生产构建，仍有 JavaScript Bundle 体积优化空间。
 
-- API Key 通过环境变量加载
-- 本地聊天记录和长期记忆不提交到公开仓库
-- 模型工具调用由 Python 后端执行
-- 当前仅开放受控的任务查询工具
-- 用户可以查看、修改和删除长期记忆
+## 6. 项目特色
 
-## 📌 项目状态
+**Agent 级别的数据隔离：** 会话和长期记忆按 Agent 进行关联，避免不同角色之间的数据混用。
 
-当前版本：CLI MVP（持续开发中）
+**记忆提取审核机制：** AI 不会直接将提取出的候选信息写入长期记忆，而是经过用户确认。
 
-本项目用于学习和实践 AI Agent 工程、Python 软件开发与大模型应用架构。
+**工具调用集成：** 通过函数调用机制，让语言模型不仅能够生成文本，还能够使用应用中的任务管理能力。
 
-## 👩‍💻 开发者
+**多模态扩展：** 在原有文字聊天基础上，逐步加入文档读取和图片理解，使 Agent 能够处理更多实际使用场景。
 
-BabyMoon
+**自动化测试：** 通过 Pytest 对后端接口及核心逻辑进行回归验证。
 
-个人独立学习与开发项目。
+## 7. 后续计划
 
-## 📸 项目演示
+- 完善前端交互与响应式布局
+- 优化大体积 JavaScript 资源的加载性能
+- 增强 Agent 人格一致性和记忆检索质量
+- 实现附件持久化和连续多轮文件问答
+- 增加 RAG 知识库检索
+- 完善部署配置与生产环境安全措施
+- 部署在线演示版本
 
-![FlowMind AI Agent 工具调用演示](assets/agent-demo.png)
+## 8. 开发状态
+
+目前项目主要在 Windows 本地开发环境中运行。
+
+核心功能已经实现，正在进行工程化整理、文档完善和部署准备。
+
+---
+
+**FlowMind AI — Building practical AI Agents with memory, tools and multimodal capabilities.**

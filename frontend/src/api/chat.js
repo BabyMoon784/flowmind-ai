@@ -1,31 +1,88 @@
+
 import axios from 'axios'
 
-// 共用 Vite 的 /api 代理，后端地址仍在 vite.config.js 配置。
 const request = axios.create({
   baseURL: '/api',
   timeout: 60000
 })
 
-// 保留以前的 sendChat(message, sessionId) 调用方式。
-// Day 1 新增第三个可选参数，支持 Agent 和长期记忆开关。
-export function sendChat(message, sessionId = null, options = {}) {
+// ==========================================
+// 发送聊天消息
+// ==========================================
+
+export function sendChat(
+  message,
+  sessionId = null,
+  options = {}
+) {
   return request.post('/chat', {
     message,
     session_id: sessionId,
     agent_id: options.agentId ?? null,
-    use_long_term_memory: options.useLongTermMemory ?? false
+    use_long_term_memory:
+      options.useLongTermMemory ?? false,
+    attachment: options.attachment ?? null
   })
 }
+
+// ==========================================
+// 文档：提取文字
+// ==========================================
+
+export function extractAttachment(file) {
+  const formData = new FormData()
+
+  formData.append('file', file)
+
+  return request.post(
+    '/attachments/extract',
+    formData,
+    {
+      timeout: 90000
+    }
+  )
+}
+
+// ==========================================
+// 图片：DeepSeek 视觉理解
+// ==========================================
+
+export function analyzeImage(file) {
+  const formData = new FormData()
+
+  formData.append('file', file)
+
+  return request.post(
+    '/attachments/analyze-image',
+    formData,
+    {
+      timeout: 120000
+    }
+  )
+}
+
+// ==========================================
+// Agent 列表
+// ==========================================
 
 export function getAgents() {
   return request.get('/agents')
 }
 
-// 请求最近 100 条消息；后端分页接口从最新消息开始返回。
+// ==========================================
+// 历史会话
+// ==========================================
+
 export function getSessionHistory(sessionId) {
-  return request.get(`/chat/sessions/${encodeURIComponent(sessionId)}`, {
-    params: { limit: 100, offset: 0 }
-  })
+  return request.get(
+    `/chat/sessions/${encodeURIComponent(sessionId)}`,
+    {
+      params: {
+        limit: 100,
+        offset: 0
+      }
+    }
+  )
 }
 
 export function getSessions() {
@@ -33,5 +90,7 @@ export function getSessions() {
 }
 
 export function deleteSession(sessionId) {
-  return request.delete(`/chat/sessions/${encodeURIComponent(sessionId)}`)
+  return request.delete(
+    `/chat/sessions/${encodeURIComponent(sessionId)}`
+  )
 }
